@@ -1,28 +1,54 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
+    <!-- Platform-specific log directory detection -->
+    <define name="LOG_DIR" class="ch.qos.logback.core.property.CanonicalHostNamePropertyDefiner" />
+
+    <if condition='property("os.name").toLowerCase().contains("win")'>
+        <then>
+            <property name="LOG_PATH" value="${LOCALAPPDATA:-${user.home}/AppData/Local}/VideoTranslator/logs" />
+        </then>
+        <elseif condition='property("os.name").toLowerCase().contains("mac")'>
+            <then>
+                <property name="LOG_PATH" value="${user.home}/Library/Logs/VideoTranslator" />
+            </then>
+        </elseif>
+        <else>
+            <property name="LOG_PATH" value="${user.home}/.local/share/video-translator/logs" />
+        </else>
+    </if>
+
+    <!-- Console appender with colored output for development -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) %cyan(%logger{36}) - %msg%n</pattern>
         </encoder>
     </appender>
 
+    <!-- File appender with size-based rotation -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${user.home}/.local/share/video-translator/logs/app.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <fileNamePattern>${user.home}/.local/share/video-translator/logs/app.%d{yyyy-MM-dd}.log</fileNamePattern>
-            <maxHistory>7</maxHistory>
+        <file>${LOG_PATH}/video-translator.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/video-translator.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>5</maxHistory>
+            <totalSizeCap>50MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n</pattern>
         </encoder>
     </appender>
 
-    <root level="INFO">
-        <appender-ref ref="CONSOLE" />
-        <appender-ref ref="FILE" />
-    </root>
+    <!-- Application logger - DEBUG level -->
+    <logger name="com.ericjesse.videotranslator" level="DEBUG" additivity="true" />
 
     <!-- Reduce noise from libraries -->
     <logger name="io.ktor" level="WARN" />
     <logger name="io.netty" level="WARN" />
+    <logger name="org.jetbrains.skia" level="WARN" />
+
+    <!-- Root logger - INFO level -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="FILE" />
+    </root>
 </configuration>

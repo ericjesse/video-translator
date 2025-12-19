@@ -37,6 +37,7 @@ dependencies {
     // Logging
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.12")
+    implementation("org.codehaus.janino:janino:3.1.12") // Required for logback conditional processing
     
     // Testing
     testImplementation(kotlin("test"))
