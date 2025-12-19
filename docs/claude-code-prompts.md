@@ -92,7 +92,7 @@ Add archive extraction utilities to the infrastructure layer:
 2. Implement extraction for:
    - ZIP files (for FFmpeg on Windows/macOS)
    - TAR.XZ files (for FFmpeg on Linux)
-   - 7z files if needed
+   - 7z files
 3. Use only JDK built-in classes or kotlinx-io (no additional dependencies)
 4. Support progress reporting during extraction
 5. Handle nested archives (FFmpeg downloads often have nested directories)
