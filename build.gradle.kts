@@ -38,6 +38,10 @@ dependencies {
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.12")
     implementation("org.codehaus.janino:janino:3.1.12") // Required for logback conditional processing
+
+    // Archive extraction (TAR.XZ, 7z support - ZIP uses JDK built-in)
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10") // Required for XZ compression support
     
     // Testing
     testImplementation(kotlin("test"))
