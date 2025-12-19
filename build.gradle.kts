@@ -47,6 +47,7 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("io.mockk:mockk:1.13.13")
+    testImplementation("io.ktor:ktor-client-mock:3.0.1")
 }
 
 compose.desktop {
