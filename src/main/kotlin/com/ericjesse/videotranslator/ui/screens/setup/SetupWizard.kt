@@ -29,6 +29,7 @@ import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.i18n.Locale
+import com.ericjesse.videotranslator.ui.screens.setup.steps.CompleteStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.DependenciesStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.DownloadingStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.TranslationServiceStep
@@ -263,8 +264,8 @@ fun SetupWizard(
                             onNext = { state.goNext() }
                         )
                         SetupStep.COMPLETE -> CompleteStep(
-                            i18n = i18n,
                             appModule = appModule,
+                            selectedWhisperModel = state.selectedWhisperModel,
                             selectedService = state.selectedTranslationService,
                             onStart = {
                                 // Mark setup as complete
@@ -492,112 +493,3 @@ private fun StepConnector(
     )
 }
 
-/**
- * Step 5: Setup complete.
- */
-@Composable
-private fun CompleteStep(
-    i18n: I18nManager,
-    appModule: AppModule,
-    selectedService: String,
-    onStart: () -> Unit
-) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.padding(24.dp)
-        ) {
-            // Success icon
-            Surface(
-                color = AppColors.success.copy(alpha = 0.15f),
-                shape = CircleShape,
-                modifier = Modifier.size(96.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = AppColors.success,
-                        modifier = Modifier.size(56.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = i18n["setup.complete.title"],
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Text(
-                text = i18n["setup.complete.description"],
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Summary card
-            AppCard(
-                elevation = AppCardElevation.Low
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SummaryItem(icon = Icons.Default.Check, text = "yt-dlp")
-                    SummaryItem(icon = Icons.Default.Check, text = "FFmpeg")
-                    SummaryItem(icon = Icons.Default.Check, text = "Whisper base model")
-                    SummaryItem(
-                        icon = Icons.Default.Check,
-                        text = when (selectedService) {
-                            "libretranslate" -> "LibreTranslate configured"
-                            "deepl" -> "DeepL configured"
-                            "openai" -> "OpenAI configured"
-                            else -> "Translation service configured"
-                        }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            AppButton(
-                text = i18n["setup.complete.startTranslating"],
-                onClick = onStart,
-                style = ButtonStyle.Primary,
-                size = ButtonSize.Large
-            )
-        }
-    }
-}
-
-@Composable
-private fun SummaryItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    text: String
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = AppColors.success,
-            modifier = Modifier.size(20.dp)
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
