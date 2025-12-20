@@ -10,8 +10,11 @@ data class VideoInfo(
     val url: String,
     val id: String,
     val title: String,
-    val duration: Long, // in seconds
-    val thumbnailUrl: String? = null
+    val duration: Long, // in milliseconds
+    val thumbnailUrl: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val bitrate: Int? = null // in kbps
 )
 
 /**
@@ -58,7 +61,8 @@ data class OutputOptions(
     val outputDirectory: String,
     val subtitleType: SubtitleType,
     val exportSrt: Boolean = false,
-    val burnedInStyle: BurnedInSubtitleStyle? = null
+    val burnedInStyle: BurnedInSubtitleStyle? = null,
+    val renderOptions: RenderOptions? = null
 )
 
 /**

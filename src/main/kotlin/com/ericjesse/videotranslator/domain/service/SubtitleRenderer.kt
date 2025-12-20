@@ -15,20 +15,32 @@ private val logger = KotlinLogging.logger {}
 /**
  * Service for rendering subtitles into video.
  * Supports both soft subtitles (embedded) and burned-in subtitles.
+ *
+ * Features:
+ * - ASS/SSA subtitle generation for better styling control
+ * - Full font configuration (family, weight, outline, shadow)
+ * - Subtitle position options (9 positions)
+ * - Multi-line subtitle formatting
+ * - Video quality options (CRF-based)
+ * - Hardware encoding support (NVENC, VideoToolbox, VAAPI, QSV, AMF)
+ * - Real-time FFmpeg progress tracking
  */
 class SubtitleRenderer(
     private val processExecutor: ProcessExecutor,
     private val platformPaths: PlatformPaths,
     private val configManager: ConfigManager
 ) {
-    
+
     private var lastResult: TranslationResult? = null
-    
+
     private val ffmpegPath: String
         get() = platformPaths.getBinaryPath("ffmpeg")
-    
+
+    private val ffprobePath: String
+        get() = platformPaths.getBinaryPath("ffprobe")
+
     /**
-     * Renders subtitles into the video.
+     * Renders subtitles into the video with full styling and encoding options.
      */
     fun render(
         videoPath: String,
@@ -36,170 +48,389 @@ class SubtitleRenderer(
         outputOptions: OutputOptions,
         videoInfo: VideoInfo
     ): Flow<StageProgress> = flow {
-        emit(StageProgress(0f, "Preparing output..."))
-        
+        val renderOptions = outputOptions.renderOptions ?: RenderOptions()
+
+        emit(StageProgress(0f, RenderProgress(
+            percentage = 0f,
+            currentTime = 0,
+            totalTime = videoInfo.duration,
+            stage = RenderStage.PREPARING
+        ).message))
+
         // Generate output filename
         val sanitizedTitle = sanitizeFilename(videoInfo.title)
         val langSuffix = subtitles.language.code.uppercase()
-        val extension = if (outputOptions.subtitleType == SubtitleType.SOFT) "mkv" else "mp4"
-        val outputFilename = "${sanitizedTitle}_$langSuffix.$extension"
+        val format = if (outputOptions.subtitleType == SubtitleType.SOFT) {
+            OutputFormat.MKV // MKV supports soft subtitles
+        } else {
+            renderOptions.outputFormat
+        }
+        val outputFilename = "${sanitizedTitle}_$langSuffix.${format.extension}"
         val outputPath = File(outputOptions.outputDirectory, outputFilename).absolutePath
-        
+
         // Ensure output directory exists
         File(outputOptions.outputDirectory).mkdirs()
-        
-        // Generate SRT file
-        emit(StageProgress(0.1f, "Generating subtitle file..."))
-        val srtPath = File(outputOptions.outputDirectory, "${sanitizedTitle}_$langSuffix.srt")
-        writeSrtFile(subtitles, srtPath)
-        
+
+        emit(StageProgress(0.05f, RenderProgress(
+            percentage = 0.05f,
+            currentTime = 0,
+            totalTime = videoInfo.duration,
+            stage = RenderStage.GENERATING_SUBTITLES
+        ).message))
+
+        // Generate subtitle file (ASS or SRT)
+        val subtitleFile: File
+        val useAss = renderOptions.useAssSubtitles && outputOptions.subtitleType == SubtitleType.BURNED_IN
+
+        if (useAss) {
+            subtitleFile = File(outputOptions.outputDirectory, "${sanitizedTitle}_$langSuffix.ass")
+            writeAssFile(subtitles, subtitleFile, renderOptions.subtitleStyle, videoInfo)
+        } else {
+            subtitleFile = File(outputOptions.outputDirectory, "${sanitizedTitle}_$langSuffix.srt")
+            writeSrtFile(subtitles, subtitleFile)
+        }
+
+        emit(StageProgress(0.1f, RenderProgress(
+            percentage = 0.1f,
+            currentTime = 0,
+            totalTime = videoInfo.duration,
+            stage = RenderStage.ENCODING
+        ).message))
+
         // Render video
-        emit(StageProgress(0.2f, "Rendering video..."))
-        
         when (outputOptions.subtitleType) {
             SubtitleType.SOFT -> {
-                renderSoftSubtitles(videoPath, srtPath.absolutePath, outputPath) { progress ->
-                    emit(StageProgress(0.2f + progress * 0.8f, "Rendering: ${(progress * 100).toInt()}%"))
+                renderSoftSubtitles(videoPath, subtitleFile.absolutePath, outputPath, videoInfo.duration) { progress ->
+                    emit(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
                 }
             }
             SubtitleType.BURNED_IN -> {
-                val style = outputOptions.burnedInStyle ?: BurnedInSubtitleStyle()
-                renderBurnedInSubtitles(videoPath, srtPath.absolutePath, outputPath, style) { progress ->
-                    emit(StageProgress(0.2f + progress * 0.8f, "Rendering: ${(progress * 100).toInt()}%"))
+                renderBurnedInSubtitles(
+                    videoPath,
+                    subtitleFile.absolutePath,
+                    outputPath,
+                    renderOptions,
+                    useAss,
+                    videoInfo.duration
+                ) { progress ->
+                    emit(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
                 }
             }
         }
-        
-        // Handle SRT export option
-        val exportedSrtPath = if (outputOptions.exportSrt) {
-            srtPath.absolutePath
+
+        emit(StageProgress(0.95f, RenderProgress(
+            percentage = 0.95f,
+            currentTime = videoInfo.duration,
+            totalTime = videoInfo.duration,
+            stage = RenderStage.FINALIZING
+        ).message))
+
+        // Handle subtitle export option
+        val exportedSubtitlePath = if (outputOptions.exportSrt) {
+            // If we generated ASS but user wants SRT export, generate SRT too
+            if (useAss) {
+                val srtFile = File(outputOptions.outputDirectory, "${sanitizedTitle}_$langSuffix.srt")
+                writeSrtFile(subtitles, srtFile)
+                srtFile.absolutePath
+            } else {
+                subtitleFile.absolutePath
+            }
         } else {
-            srtPath.delete()
             null
         }
-        
+
+        // Cleanup temp subtitle file if not exporting
+        if (!outputOptions.exportSrt || (useAss && outputOptions.exportSrt)) {
+            subtitleFile.delete()
+        }
+
         // Cleanup source video
         File(videoPath).delete()
-        
+
         lastResult = TranslationResult(
             videoFile = outputPath,
-            subtitleFile = exportedSrtPath,
+            subtitleFile = exportedSubtitlePath,
             duration = 0 // Will be set by orchestrator
         )
-        
-        emit(StageProgress(1f, "Render complete"))
+
+        emit(StageProgress(1f, RenderProgress(
+            percentage = 1f,
+            currentTime = videoInfo.duration,
+            totalTime = videoInfo.duration,
+            stage = RenderStage.COMPLETE
+        ).message))
     }
-    
+
     /**
      * Returns the result of the last render.
      */
     fun getRenderResult(): TranslationResult {
         return lastResult ?: throw IllegalStateException("No render result available")
     }
-    
+
+    /**
+     * Checks if a hardware encoder is available on this system.
+     */
+    suspend fun isEncoderAvailable(encoder: HardwareEncoder): Boolean {
+        if (encoder == HardwareEncoder.NONE) return true
+
+        // Check platform compatibility
+        if (Platform.current() !in encoder.platform) {
+            return false
+        }
+
+        // Test encoder with FFmpeg
+        val testCommand = HardwareEncoderDetector.getTestCommand(ffmpegPath, encoder)
+        return try {
+            var success = true
+            processExecutor.execute(testCommand) { line ->
+                if (line.contains("Cannot open") || line.contains("No device") ||
+                    line.contains("Error") || line.contains("not found")) {
+                    success = false
+                }
+            }
+            success
+        } catch (e: Exception) {
+            logger.debug { "Encoder ${encoder.displayName} not available: ${e.message}" }
+            false
+        }
+    }
+
+    /**
+     * Gets list of available hardware encoders for this system.
+     */
+    suspend fun getAvailableEncoders(): List<HardwareEncoder> {
+        val available = mutableListOf(HardwareEncoder.NONE) // Software always available
+
+        for (encoder in HardwareEncoder.availableForPlatform(Platform.current())) {
+            if (encoder != HardwareEncoder.NONE && isEncoderAvailable(encoder)) {
+                available.add(encoder)
+            }
+        }
+
+        return available
+    }
+
     /**
      * Renders soft subtitles (embedded as a separate track in MKV).
      */
     private suspend fun renderSoftSubtitles(
         videoPath: String,
-        srtPath: String,
+        subtitlePath: String,
         outputPath: String,
-        onProgress: suspend (Float) -> Unit
+        totalDuration: Long,
+        onProgress: suspend (RenderProgress) -> Unit
     ) {
+        val subtitleCodec = if (subtitlePath.endsWith(".ass")) "ass" else "srt"
+
         val command = listOf(
             ffmpegPath,
             "-i", videoPath,
-            "-i", srtPath,
+            "-i", subtitlePath,
             "-c", "copy",           // Copy video/audio streams
-            "-c:s", "srt",          // Subtitle codec
+            "-c:s", subtitleCodec,  // Subtitle codec
             "-map", "0",            // Map all streams from input 0
             "-map", "1",            // Map subtitle from input 1
             "-y",                   // Overwrite output
             "-progress", "pipe:1",  // Progress to stdout
             outputPath
         )
-        
-        logger.debug { "Running FFmpeg: ${command.joinToString(" ")}" }
-        
-        var duration: Long? = null
-        
-        processExecutor.execute(command) { line ->
-            // Parse FFmpeg progress output
-            if (line.startsWith("Duration:")) {
-                duration = parseFfmpegDuration(line)
-            }
-            if (line.startsWith("out_time_ms=")) {
-                val currentMs = line.substringAfter("=").toLongOrNull()
-                if (currentMs != null && duration != null && duration!! > 0) {
-                    val progress = (currentMs.toFloat() / 1000 / duration!!).coerceIn(0f, 1f)
-                    onProgress(progress)
-                }
-            }
-        }
+
+        logger.debug { "Running FFmpeg (soft subs): ${command.joinToString(" ")}" }
+
+        executeWithProgress(command, totalDuration, onProgress)
     }
-    
+
     /**
-     * Renders burned-in subtitles (permanently visible in video).
+     * Renders burned-in subtitles with full styling and encoding options.
      */
     private suspend fun renderBurnedInSubtitles(
         videoPath: String,
-        srtPath: String,
+        subtitlePath: String,
         outputPath: String,
-        style: BurnedInSubtitleStyle,
-        onProgress: suspend (Float) -> Unit
+        options: RenderOptions,
+        isAssFormat: Boolean,
+        totalDuration: Long,
+        onProgress: suspend (RenderProgress) -> Unit
     ) {
-        // Build FFmpeg subtitle filter with styling
-        val subtitleFilter = buildSubtitleFilter(srtPath, style)
-        
-        val command = listOf(
-            ffmpegPath,
-            "-i", videoPath,
-            "-vf", subtitleFilter,
-            "-c:a", "copy",         // Copy audio
-            "-c:v", "libx264",      // Re-encode video
-            "-preset", "medium",
-            "-crf", "23",
-            "-y",
-            "-progress", "pipe:1",
-            outputPath
+        val command = buildBurnedInCommand(
+            videoPath,
+            subtitlePath,
+            outputPath,
+            options,
+            isAssFormat
         )
-        
-        logger.debug { "Running FFmpeg: ${command.joinToString(" ")}" }
-        
-        var duration: Long? = null
-        
-        processExecutor.execute(command) { line ->
-            if (line.startsWith("Duration:")) {
-                duration = parseFfmpegDuration(line)
-            }
-            if (line.startsWith("out_time_ms=")) {
-                val currentMs = line.substringAfter("=").toLongOrNull()
-                if (currentMs != null && duration != null && duration!! > 0) {
-                    val progress = (currentMs.toFloat() / 1000 / duration!!).coerceIn(0f, 1f)
-                    onProgress(progress)
-                }
-            }
-        }
+
+        logger.debug { "Running FFmpeg (burned-in): ${command.joinToString(" ")}" }
+
+        executeWithProgress(command, totalDuration, onProgress)
     }
-    
-    private fun buildSubtitleFilter(srtPath: String, style: BurnedInSubtitleStyle): String {
-        // Escape path for FFmpeg filter
-        val escapedPath = srtPath.replace(":", "\\:").replace("'", "\\'")
-        
-        val fontColor = style.fontColor.removePrefix("#")
-        
-        val borderStyle = if (style.backgroundColor == BackgroundColor.NONE) {
-            "BorderStyle=1" // Outline only
+
+    /**
+     * Builds the FFmpeg command for burned-in subtitles.
+     */
+    private fun buildBurnedInCommand(
+        videoPath: String,
+        subtitlePath: String,
+        outputPath: String,
+        options: RenderOptions,
+        isAssFormat: Boolean
+    ): List<String> {
+        val command = mutableListOf<String>()
+
+        command.add(ffmpegPath)
+        command.add("-i")
+        command.add(videoPath)
+
+        // Add hardware decoding for VAAPI if using VAAPI encoder
+        if (options.encoding.encoder == HardwareEncoder.VAAPI) {
+            command.addAll(listOf("-vaapi_device", "/dev/dri/renderD128"))
+        }
+
+        // Build video filter
+        val subtitleFilter = buildSubtitleFilter(subtitlePath, options.subtitleStyle, isAssFormat)
+        val videoFilter = if (options.encoding.encoder == HardwareEncoder.VAAPI) {
+            // VAAPI needs format conversion and upload
+            "$subtitleFilter,format=nv12,hwupload"
         } else {
-            val bgColor = style.backgroundColor.hex?.removePrefix("#") ?: "000000"
-            val alpha = ((1 - style.backgroundOpacity) * 255).toInt().toString(16).padStart(2, '0')
-            "BorderStyle=4,BackColour=&H${alpha}${bgColor}&" // Box background
+            subtitleFilter
         }
-        
-        return "subtitles='$escapedPath':force_style='FontSize=${style.fontSize}," +
-               "PrimaryColour=&H${fontColor}&,$borderStyle'"
+
+        command.add("-vf")
+        command.add(videoFilter)
+
+        // Add encoder-specific arguments
+        val encoderArgs = HardwareEncoderDetector.getEncoderArgs(
+            options.encoding.encoder,
+            options.encoding.quality,
+            options.encoding.preset,
+            options.encoding.customBitrate
+        )
+        command.addAll(encoderArgs)
+
+        // Audio codec
+        command.add("-c:a")
+        command.add(options.encoding.audioCodec.ffmpegValue)
+        if (options.encoding.audioCodec != AudioCodec.COPY && options.encoding.audioBitrate != null) {
+            command.add("-b:a")
+            command.add("${options.encoding.audioBitrate}k")
+        }
+
+        // Output options
+        command.add("-y")
+        command.add("-progress")
+        command.add("pipe:1")
+        command.add(outputPath)
+
+        return command
     }
-    
+
+    /**
+     * Builds the FFmpeg subtitle filter with optional styling.
+     */
+    private fun buildSubtitleFilter(
+        subtitlePath: String,
+        style: SubtitleStyle,
+        isAssFormat: Boolean
+    ): String {
+        // Escape path for FFmpeg filter
+        val escapedPath = subtitlePath
+            .replace("\\", "\\\\\\\\")
+            .replace(":", "\\\\:")
+            .replace("'", "\\\\'")
+            .replace("[", "\\\\[")
+            .replace("]", "\\\\]")
+
+        return if (isAssFormat) {
+            // ASS format - styling is in the file, just reference it
+            "ass='$escapedPath'"
+        } else {
+            // SRT format - apply styling via force_style
+            val forceStyle = buildForceStyle(style)
+            "subtitles='$escapedPath':force_style='$forceStyle'"
+        }
+    }
+
+    /**
+     * Builds FFmpeg force_style string for SRT subtitles.
+     */
+    private fun buildForceStyle(style: SubtitleStyle): String {
+        val parts = mutableListOf<String>()
+
+        parts.add("Fontname=${style.fontFamily}")
+        parts.add("Fontsize=${style.fontSize}")
+
+        // Convert colors to ASS format
+        parts.add("PrimaryColour=${style.colorToAss(style.primaryColor)}")
+        parts.add("OutlineColour=${style.colorToAss(style.outlineColor)}")
+        parts.add("BackColour=${style.colorToAss(style.shadowColor)}")
+
+        // Font weight
+        val bold = if (style.fontWeight == FontWeight.BOLD || style.fontWeight == FontWeight.EXTRA_BOLD) -1 else 0
+        parts.add("Bold=$bold")
+
+        // Style options
+        if (style.italic) parts.add("Italic=-1")
+        if (style.underline) parts.add("Underline=-1")
+        if (style.strikeout) parts.add("StrikeOut=-1")
+
+        // Border style
+        parts.add("BorderStyle=${style.borderStyle.assBorderStyle}")
+        parts.add("Outline=${style.outlineWidth}")
+        parts.add("Shadow=${style.shadowDepth}")
+
+        // Position
+        parts.add("Alignment=${style.position.assAlignment}")
+        parts.add("MarginL=${style.marginLeft}")
+        parts.add("MarginR=${style.marginRight}")
+        parts.add("MarginV=${style.effectiveMarginVertical}")
+
+        return parts.joinToString(",")
+    }
+
+    /**
+     * Executes FFmpeg command with progress tracking.
+     */
+    private suspend fun executeWithProgress(
+        command: List<String>,
+        totalDuration: Long,
+        onProgress: suspend (RenderProgress) -> Unit
+    ) {
+        var currentProgress = RenderProgress(
+            percentage = 0f,
+            currentTime = 0,
+            totalTime = totalDuration,
+            stage = RenderStage.ENCODING
+        )
+
+        processExecutor.execute(command) { line ->
+            val updatedProgress = FfmpegProgressParser.parseLine(line, totalDuration, currentProgress)
+            if (updatedProgress != null) {
+                currentProgress = updatedProgress
+                onProgress(currentProgress)
+            }
+        }
+    }
+
+    /**
+     * Writes subtitles to an ASS file with styling.
+     */
+    private fun writeAssFile(
+        subtitles: Subtitles,
+        file: File,
+        style: SubtitleStyle,
+        videoInfo: VideoInfo
+    ) {
+        val width = videoInfo.width ?: 1920
+        val height = videoInfo.height ?: 1080
+        val content = AssGenerator.generate(subtitles, style, width, height)
+        file.writeText(content)
+        logger.debug { "Generated ASS file: ${file.absolutePath}" }
+    }
+
+    /**
+     * Writes subtitles to an SRT file.
+     */
     private fun writeSrtFile(subtitles: Subtitles, file: File) {
         file.writeText(buildString {
             for (entry in subtitles.entries) {
@@ -209,8 +440,12 @@ class SubtitleRenderer(
                 appendLine()
             }
         })
+        logger.debug { "Generated SRT file: ${file.absolutePath}" }
     }
-    
+
+    /**
+     * Formats a timestamp for SRT format (HH:MM:SS,mmm).
+     */
     private fun formatSrtTimestamp(ms: Long): String {
         val hours = ms / 3600000
         val minutes = (ms % 3600000) / 60000
@@ -218,20 +453,43 @@ class SubtitleRenderer(
         val millis = ms % 1000
         return String.format("%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
     }
-    
-    private fun parseFfmpegDuration(line: String): Long? {
-        // Format: Duration: HH:MM:SS.mm
-        val pattern = """Duration:\s*(\d+):(\d+):(\d+)\.(\d+)""".toRegex()
-        val match = pattern.find(line) ?: return null
-        
-        val (h, m, s, cs) = match.destructured
-        return (h.toLong() * 3600 + m.toLong() * 60 + s.toLong()) * 1000 + cs.toLong() * 10
-    }
-    
+
+    /**
+     * Sanitizes a filename by removing or replacing invalid characters.
+     */
     private fun sanitizeFilename(name: String): String {
         return name
             .replace(Regex("""[<>:"/\\|?*]"""), "_")
             .replace(Regex("""\s+"""), "_")
             .take(100) // Limit length
+    }
+
+    /**
+     * Gets video bitrate for original quality encoding.
+     */
+    suspend fun getVideoBitrate(videoPath: String): Int? {
+        val command = listOf(
+            ffprobePath,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=bit_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            videoPath
+        )
+
+        var bitrate: Int? = null
+
+        try {
+            processExecutor.execute(command) { line ->
+                val value = line.trim().toLongOrNull()
+                if (value != null) {
+                    bitrate = (value / 1000).toInt() // Convert to kbps
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn { "Could not determine video bitrate: ${e.message}" }
+        }
+
+        return bitrate
     }
 }
