@@ -29,6 +29,7 @@ import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.i18n.Locale
+import com.ericjesse.videotranslator.ui.screens.setup.steps.WelcomeStep
 import com.ericjesse.videotranslator.ui.theme.AppColors
 
 /**
@@ -484,136 +485,6 @@ private fun StepConnector(
             .height(2.dp)
             .background(color)
     )
-}
-
-/**
- * Step 1: Welcome screen with language selection.
- */
-@Composable
-private fun WelcomeStep(
-    i18n: I18nManager,
-    onNext: () -> Unit,
-    onClose: (() -> Unit)?
-) {
-    val currentLocale by i18n.currentLocale.collectAsState()
-
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        // Close button in corner
-        if (onClose != null) {
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(16.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = i18n["action.close"],
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.padding(24.dp)
-        ) {
-            // App icon placeholder
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.size(96.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.Translate,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(48.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = i18n["app.name"],
-                style = MaterialTheme.typography.displaySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Text(
-                text = i18n["app.tagline"],
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Text(
-                text = i18n["setup.welcome.selectLanguage"],
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            // Language dropdown
-            var expanded by remember { mutableStateOf(false) }
-
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = !expanded }
-            ) {
-                OutlinedTextField(
-                    value = currentLocale.nativeName,
-                    onValueChange = {},
-                    readOnly = true,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    modifier = Modifier
-                        .menuAnchor()
-                        .width(200.dp),
-                    colors = OutlinedTextFieldDefaults.colors()
-                )
-
-                ExposedDropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    Locale.entries.forEach { locale ->
-                        DropdownMenuItem(
-                            text = { Text(locale.nativeName) },
-                            onClick = {
-                                i18n.setLocale(locale)
-                                expanded = false
-                            },
-                            leadingIcon = if (locale == currentLocale) {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            } else null
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            AppButton(
-                text = i18n["setup.welcome.getStarted"],
-                onClick = onNext,
-                style = ButtonStyle.Primary,
-                size = ButtonSize.Large
-            )
-        }
-    }
 }
 
 /**
