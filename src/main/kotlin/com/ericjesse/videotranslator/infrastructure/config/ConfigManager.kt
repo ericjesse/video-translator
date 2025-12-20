@@ -1,5 +1,6 @@
 package com.ericjesse.videotranslator.infrastructure.config
 
+import com.ericjesse.videotranslator.infrastructure.security.SecureStorage
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -10,8 +11,19 @@ private val logger = KotlinLogging.logger {}
 
 /**
  * Manages application settings and configuration.
+ * Sensitive data like API keys are stored using platform-native secure storage.
  */
-class ConfigManager(private val platformPaths: PlatformPaths) {
+class ConfigManager(
+    private val platformPaths: PlatformPaths,
+    private val secureStorage: SecureStorage? = null
+) {
+
+    companion object {
+        // Keys for secure storage
+        private const val KEY_DEEPL_API = "deepl_api_key"
+        private const val KEY_OPENAI_API = "openai_api_key"
+        private const val KEY_GOOGLE_API = "google_api_key"
+    }
     
     private val json = Json { 
         prettyPrint = true 
@@ -72,16 +84,15 @@ class ConfigManager(private val platformPaths: PlatformPaths) {
     
     /**
      * Gets translation service configuration (API keys, etc.)
+     * API keys are retrieved from secure storage if available.
      */
     fun getTranslationServiceConfig(): TranslationServiceConfig {
         cachedServiceConfig?.let { return it }
-        
+
         val file = File(platformPaths.servicesFile)
-        return if (file.exists()) {
+        val baseConfig = if (file.exists()) {
             try {
-                val config = json.decodeFromString<TranslationServiceConfig>(file.readText())
-                cachedServiceConfig = config
-                config
+                json.decodeFromString<TranslationServiceConfig>(file.readText())
             } catch (e: Exception) {
                 logger.warn { "Failed to parse services config: ${e.message}" }
                 TranslationServiceConfig()
@@ -89,15 +100,51 @@ class ConfigManager(private val platformPaths: PlatformPaths) {
         } else {
             TranslationServiceConfig()
         }
+
+        // Retrieve API keys from secure storage
+        val config = if (secureStorage != null) {
+            baseConfig.copy(
+                deeplApiKey = secureStorage.retrieve(KEY_DEEPL_API) ?: baseConfig.deeplApiKey,
+                openaiApiKey = secureStorage.retrieve(KEY_OPENAI_API) ?: baseConfig.openaiApiKey,
+                googleApiKey = secureStorage.retrieve(KEY_GOOGLE_API) ?: baseConfig.googleApiKey
+            )
+        } else {
+            baseConfig
+        }
+
+        cachedServiceConfig = config
+        return config
     }
     
     /**
      * Saves translation service configuration.
+     * API keys are stored in secure storage if available, with placeholders in the JSON file.
      */
     fun saveTranslationServiceConfig(config: TranslationServiceConfig) {
         val file = File(platformPaths.servicesFile)
         file.parentFile?.mkdirs()
-        file.writeText(json.encodeToString(config))
+
+        // Store API keys in secure storage
+        val configToSave = if (secureStorage != null) {
+            // Store keys securely
+            config.deeplApiKey?.let { secureStorage.store(KEY_DEEPL_API, it) }
+                ?: secureStorage.delete(KEY_DEEPL_API)
+            config.openaiApiKey?.let { secureStorage.store(KEY_OPENAI_API, it) }
+                ?: secureStorage.delete(KEY_OPENAI_API)
+            config.googleApiKey?.let { secureStorage.store(KEY_GOOGLE_API, it) }
+                ?: secureStorage.delete(KEY_GOOGLE_API)
+
+            // Save config without API keys in the JSON file
+            config.copy(
+                deeplApiKey = null,
+                openaiApiKey = null,
+                googleApiKey = null
+            )
+        } else {
+            config
+        }
+
+        file.writeText(json.encodeToString(configToSave))
         cachedServiceConfig = config
         logger.info { "Service config saved" }
     }
@@ -133,6 +180,75 @@ class ConfigManager(private val platformPaths: PlatformPaths) {
     fun clearCache() {
         cachedSettings = null
         cachedServiceConfig = null
+    }
+
+    /**
+     * Migrates existing API keys from plain JSON storage to secure storage.
+     * Call this once during application initialization.
+     * @return true if migration was performed, false if not needed or failed
+     */
+    fun migrateApiKeysToSecureStorage(): Boolean {
+        if (secureStorage == null) {
+            logger.debug { "No secure storage available, skipping migration" }
+            return false
+        }
+
+        val file = File(platformPaths.servicesFile)
+        if (!file.exists()) {
+            logger.debug { "No services file found, skipping migration" }
+            return false
+        }
+
+        return try {
+            val existingConfig = json.decodeFromString<TranslationServiceConfig>(file.readText())
+
+            // Check if there are any keys to migrate
+            val hasKeys = existingConfig.deeplApiKey != null ||
+                    existingConfig.openaiApiKey != null ||
+                    existingConfig.googleApiKey != null
+
+            if (!hasKeys) {
+                logger.debug { "No API keys to migrate" }
+                return false
+            }
+
+            // Migrate keys to secure storage
+            var migrated = false
+            existingConfig.deeplApiKey?.let {
+                if (secureStorage.store(KEY_DEEPL_API, it)) {
+                    logger.info { "Migrated DeepL API key to secure storage" }
+                    migrated = true
+                }
+            }
+            existingConfig.openaiApiKey?.let {
+                if (secureStorage.store(KEY_OPENAI_API, it)) {
+                    logger.info { "Migrated OpenAI API key to secure storage" }
+                    migrated = true
+                }
+            }
+            existingConfig.googleApiKey?.let {
+                if (secureStorage.store(KEY_GOOGLE_API, it)) {
+                    logger.info { "Migrated Google API key to secure storage" }
+                    migrated = true
+                }
+            }
+
+            if (migrated) {
+                // Remove keys from JSON file
+                val cleanedConfig = existingConfig.copy(
+                    deeplApiKey = null,
+                    openaiApiKey = null,
+                    googleApiKey = null
+                )
+                file.writeText(json.encodeToString(cleanedConfig))
+                logger.info { "Removed API keys from services.json after migration" }
+            }
+
+            migrated
+        } catch (e: Exception) {
+            logger.error(e) { "Failed to migrate API keys to secure storage" }
+            false
+        }
     }
 }
 
