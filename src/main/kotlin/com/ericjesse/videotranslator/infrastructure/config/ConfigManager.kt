@@ -261,6 +261,7 @@ class ConfigManager(
  *
  * @property version Settings schema version for migration purposes.
  * @property language UI language code (e.g., "en", "fr", "de").
+ * @property setupProgress Tracks setup wizard progress for resume functionality.
  * @property transcription Settings for audio transcription (Whisper).
  * @property translation Settings for subtitle translation.
  * @property subtitle Settings for subtitle output format and styling.
@@ -272,12 +273,31 @@ class ConfigManager(
 data class AppSettings(
     val version: Int = 1,
     val language: String = "en",
+    val setupProgress: SetupProgress = SetupProgress(),
     val transcription: TranscriptionSettings = TranscriptionSettings(),
     val translation: TranslationSettings = TranslationSettings(),
     val subtitle: SubtitleSettings = SubtitleSettings(),
     val updates: UpdateSettings = UpdateSettings(),
     val resources: ResourceSettings = ResourceSettings(),
     val ui: UiSettings = UiSettings()
+)
+
+/**
+ * Tracks setup wizard progress for resume functionality.
+ *
+ * @property completed Whether the setup wizard has been completed.
+ * @property currentStep The current step index (0-based) if setup is in progress.
+ * @property selectedWhisperModel The Whisper model selected during setup.
+ * @property selectedTranslationService The translation service selected during setup.
+ * @property dependenciesDownloaded Whether dependencies have been downloaded.
+ */
+@Serializable
+data class SetupProgress(
+    val completed: Boolean = false,
+    val currentStep: Int = 0,
+    val selectedWhisperModel: String = "base",
+    val selectedTranslationService: String = "libretranslate",
+    val dependenciesDownloaded: Boolean = false
 )
 
 /**
