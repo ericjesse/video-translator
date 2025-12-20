@@ -12,6 +12,10 @@ private val logger = KotlinLogging.logger {}
 /**
  * Manages application settings and configuration.
  * Sensitive data like API keys are stored using platform-native secure storage.
+ *
+ * @property platformPaths Platform-specific paths for configuration files and directories.
+ * @property secureStorage Optional secure storage for sensitive data like API keys.
+ *                         If null, API keys are stored in plain JSON files.
  */
 class ConfigManager(
     private val platformPaths: PlatformPaths,
@@ -254,6 +258,15 @@ class ConfigManager(
 
 /**
  * Application settings.
+ *
+ * @property version Settings schema version for migration purposes.
+ * @property language UI language code (e.g., "en", "fr", "de").
+ * @property transcription Settings for audio transcription (Whisper).
+ * @property translation Settings for subtitle translation.
+ * @property subtitle Settings for subtitle output format and styling.
+ * @property updates Settings for automatic update checks.
+ * @property resources Resource limits (memory, CPU) for processing.
+ * @property ui User interface preferences.
  */
 @Serializable
 data class AppSettings(
@@ -267,19 +280,41 @@ data class AppSettings(
     val ui: UiSettings = UiSettings()
 )
 
+/**
+ * Settings for audio transcription.
+ *
+ * @property whisperModel Whisper model size to use (tiny, base, small, medium, large).
+ * @property preferYouTubeCaptions Whether to use YouTube's auto-captions when available
+ *                                  instead of running local transcription.
+ */
 @Serializable
 data class TranscriptionSettings(
     val whisperModel: String = "base",
     val preferYouTubeCaptions: Boolean = true
 )
 
+/**
+ * Settings for subtitle translation.
+ *
+ * @property defaultService Default translation service (libretranslate, deepl, openai, google).
+ * @property defaultSourceLanguage Default source language code, or null for auto-detection.
+ * @property defaultTargetLanguage Default target language code for translations.
+ */
 @Serializable
 data class TranslationSettings(
     val defaultService: String = "libretranslate",
-    val defaultSourceLanguage: String? = null, // null = auto-detect
+    val defaultSourceLanguage: String? = null,
     val defaultTargetLanguage: String = "en"
 )
 
+/**
+ * Settings for subtitle output.
+ *
+ * @property defaultOutputMode How subtitles are added to video: "soft" (selectable track),
+ *                              "hard" (burned into video), or "srt" (separate file only).
+ * @property alwaysExportSrt Whether to always export a separate SRT file alongside the video.
+ * @property burnedIn Styling options for burned-in (hardcoded) subtitles.
+ */
 @Serializable
 data class SubtitleSettings(
     val defaultOutputMode: String = "soft",
@@ -287,6 +322,14 @@ data class SubtitleSettings(
     val burnedIn: BurnedInSettings = BurnedInSettings()
 )
 
+/**
+ * Styling options for burned-in (hardcoded) subtitles.
+ *
+ * @property fontSize Font size in pixels for subtitle text.
+ * @property fontColor Font color as a hex string (e.g., "#FFFFFF" for white).
+ * @property backgroundColor Background color as a hex string, or "none" for transparent.
+ * @property backgroundOpacity Opacity of the background (0.0 = transparent, 1.0 = opaque).
+ */
 @Serializable
 data class BurnedInSettings(
     val fontSize: Int = 24,
@@ -295,6 +338,14 @@ data class BurnedInSettings(
     val backgroundOpacity: Float = 0f
 )
 
+/**
+ * Settings for automatic update checks.
+ *
+ * @property checkAutomatically Whether to automatically check for updates on startup.
+ * @property checkIntervalDays Minimum days between automatic update checks.
+ * @property autoUpdateDependencies Whether to automatically update dependencies (yt-dlp, FFmpeg, etc.).
+ * @property lastCheckTimestamp Unix timestamp (millis) of the last update check.
+ */
 @Serializable
 data class UpdateSettings(
     val checkAutomatically: Boolean = true,
@@ -303,12 +354,25 @@ data class UpdateSettings(
     val lastCheckTimestamp: Long = 0
 )
 
+/**
+ * Resource limits for processing operations.
+ *
+ * @property maxMemoryMB Maximum memory in megabytes for processing tasks.
+ * @property maxMemoryPercent Maximum percentage of system memory to use (0-100).
+ */
 @Serializable
 data class ResourceSettings(
     val maxMemoryMB: Int = 4096,
     val maxMemoryPercent: Int = 60
 )
 
+/**
+ * User interface preferences.
+ *
+ * @property defaultOutputDirectory Default directory for saving output files, or empty for source directory.
+ * @property windowWidth Main window width in pixels.
+ * @property windowHeight Main window height in pixels.
+ */
 @Serializable
 data class UiSettings(
     val defaultOutputDirectory: String = "",
@@ -318,6 +382,11 @@ data class UiSettings(
 
 /**
  * Translation service configuration (contains sensitive data like API keys).
+ *
+ * @property libreTranslateUrl URL of the LibreTranslate server to use.
+ * @property deeplApiKey API key for DeepL translation service.
+ * @property openaiApiKey API key for OpenAI translation service.
+ * @property googleApiKey API key for Google Cloud Translation service.
  */
 @Serializable
 data class TranslationServiceConfig(
@@ -329,6 +398,11 @@ data class TranslationServiceConfig(
 
 /**
  * Tracks installed versions of dependencies.
+ *
+ * @property ytDlp Installed version of yt-dlp, or null if not installed.
+ * @property ffmpeg Installed version of FFmpeg, or null if not installed.
+ * @property whisperCpp Installed version of whisper.cpp, or null if not installed.
+ * @property whisperModel Name of the installed Whisper model (tiny, base, small, medium, large), or null.
  */
 @Serializable
 data class InstalledVersions(

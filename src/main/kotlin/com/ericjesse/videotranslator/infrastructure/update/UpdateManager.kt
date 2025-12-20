@@ -39,6 +39,10 @@ private val logger = KotlinLogging.logger {}
  * - SHA256 checksum verification
  * - Atomic file replacement (download to temp, verify, move)
  * - Platform-specific archive extraction for FFmpeg and Whisper.cpp
+ *
+ * @property httpClient HTTP client for downloading files and fetching release information.
+ * @property platformPaths Platform-specific paths for binaries, cache, and models directories.
+ * @property configManager Configuration manager for reading/writing installed versions.
  */
 class UpdateManager(
     private val httpClient: HttpClient,
@@ -678,6 +682,15 @@ class UpdateManager(
 
 // ========== Data Classes ==========
 
+/**
+ * Represents a GitHub release from the API.
+ *
+ * @property tagName Version tag of the release (e.g., "v1.2.3").
+ * @property name Human-readable name of the release.
+ * @property body Release notes in Markdown format.
+ * @property publishedAt ISO 8601 timestamp when the release was published.
+ * @property assets List of downloadable assets attached to this release.
+ */
 @Serializable
 data class GitHubRelease(
     val tagName: String,
@@ -687,6 +700,13 @@ data class GitHubRelease(
     val assets: List<GitHubAsset> = emptyList()
 )
 
+/**
+ * Represents a downloadable asset attached to a GitHub release.
+ *
+ * @property name Filename of the asset (e.g., "yt-dlp_macos").
+ * @property browserDownloadUrl Direct download URL for the asset.
+ * @property size File size in bytes.
+ */
 @Serializable
 data class GitHubAsset(
     val name: String,
@@ -694,6 +714,15 @@ data class GitHubAsset(
     val size: Long = 0
 )
 
+/**
+ * Information about an available application update.
+ *
+ * @property currentVersion Currently installed application version.
+ * @property newVersion Version of the available update.
+ * @property releaseNotes Release notes describing what's new in this version.
+ * @property downloadUrl URL to download the update installer.
+ * @property publishedAt ISO 8601 timestamp when the update was published.
+ */
 data class AppUpdateInfo(
     val currentVersion: String,
     val newVersion: String,
@@ -702,15 +731,29 @@ data class AppUpdateInfo(
     val publishedAt: String?
 )
 
+/**
+ * Available updates for application dependencies.
+ *
+ * @property ytDlpAvailable New yt-dlp version available, or null if up-to-date.
+ * @property ffmpegAvailable New FFmpeg version available, or null if up-to-date.
+ * @property whisperCppAvailable New whisper.cpp version available, or null if up-to-date.
+ */
 data class DependencyUpdates(
     val ytDlpAvailable: String?,
     val ffmpegAvailable: String?,
     val whisperCppAvailable: String?
 ) {
+    /** Whether any dependency updates are available. */
     val hasUpdates: Boolean get() =
         ytDlpAvailable != null || ffmpegAvailable != null || whisperCppAvailable != null
 }
 
+/**
+ * Progress update during a download operation.
+ *
+ * @property percentage Download progress from 0.0 (started) to 1.0 (complete).
+ * @property message Human-readable status message describing current activity.
+ */
 data class DownloadProgress(
     val percentage: Float,
     val message: String
@@ -720,6 +763,9 @@ data class DownloadProgress(
 
 /**
  * Exception thrown when an update operation fails.
+ *
+ * @property message Description of what went wrong.
+ * @property cause Underlying exception that caused the failure, if any.
  */
 class UpdateException(
     override val message: String,
@@ -728,6 +774,9 @@ class UpdateException(
 
 /**
  * Exception thrown when checksum verification fails.
+ *
+ * @property expected Expected SHA256 checksum of the downloaded file.
+ * @property actual Actual SHA256 checksum computed from the downloaded file.
  */
 class ChecksumMismatchException(
     val expected: String,
