@@ -29,6 +29,8 @@ import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
+import com.ericjesse.videotranslator.ui.i18n.Locale
+import com.ericjesse.videotranslator.ui.screens.settings.tabs.GeneralTabContent
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -478,7 +480,11 @@ private fun SettingsTabContent(
                 SettingsTab.GENERAL -> GeneralTabContent(
                     appModule = appModule,
                     settings = state.settings,
-                    onUpdateSettings = onUpdateSettings
+                    onUpdateSettings = onUpdateSettings,
+                    onLanguageChange = { locale ->
+                        // Apply language change immediately
+                        appModule.i18nManager.setLocale(locale)
+                    }
                 )
                 SettingsTab.TRANSLATION -> TranslationTabContent(
                     appModule = appModule,
@@ -512,81 +518,6 @@ private fun SettingsTabContent(
 
 // ========== Tab Content Placeholders ==========
 // These will be replaced with proper implementations in separate files
-
-@Composable
-private fun GeneralTabContent(
-    appModule: AppModule,
-    settings: AppSettings,
-    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit
-) {
-    val i18n = appModule.i18nManager
-
-    Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        // Language setting
-        SettingsSection(title = i18n["settings.general.language"]) {
-            SettingsDropdown(
-                label = i18n["settings.general.language"],
-                value = settings.language,
-                options = listOf("en" to "English", "de" to "Deutsch", "fr" to "Francais"),
-                onValueChange = { lang ->
-                    onUpdateSettings { it.copy(language = lang) }
-                }
-            )
-        }
-
-        // Default output location
-        SettingsSection(title = i18n["settings.general.outputLocation"]) {
-            SettingsPathField(
-                label = i18n["settings.general.outputLocation"],
-                value = settings.ui.defaultOutputDirectory,
-                onValueChange = { path ->
-                    onUpdateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = path)) }
-                },
-                onBrowse = { /* TODO: Open file picker */ }
-            )
-        }
-
-        // Default source language
-        SettingsSection(title = i18n["settings.general.defaultSourceLanguage"]) {
-            SettingsDropdown(
-                label = i18n["settings.general.defaultSourceLanguage"],
-                value = settings.translation.defaultSourceLanguage ?: "auto",
-                options = listOf(
-                    "auto" to i18n["main.autoDetect"],
-                    "en" to "English",
-                    "de" to "German",
-                    "fr" to "French",
-                    "es" to "Spanish"
-                ),
-                onValueChange = { lang ->
-                    val sourceLang = if (lang == "auto") null else lang
-                    onUpdateSettings {
-                        it.copy(translation = it.translation.copy(defaultSourceLanguage = sourceLang))
-                    }
-                }
-            )
-        }
-
-        // Default target language
-        SettingsSection(title = i18n["settings.general.defaultTargetLanguage"]) {
-            SettingsDropdown(
-                label = i18n["settings.general.defaultTargetLanguage"],
-                value = settings.translation.defaultTargetLanguage,
-                options = listOf(
-                    "en" to "English",
-                    "de" to "German",
-                    "fr" to "French",
-                    "es" to "Spanish"
-                ),
-                onValueChange = { lang ->
-                    onUpdateSettings {
-                        it.copy(translation = it.translation.copy(defaultTargetLanguage = lang))
-                    }
-                }
-            )
-        }
-    }
-}
 
 @Composable
 private fun TranslationTabContent(
