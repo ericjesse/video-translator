@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.sp
 import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.TranslationJob
 import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.pipeline.PipelineError
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStageName
 import com.ericjesse.videotranslator.ui.components.*
 import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
@@ -42,92 +44,13 @@ import java.io.File
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
-// ========== State Models ==========
+// Note: State models (ProgressScreenState, StageState, StageStatus, LogEntry, LogEntryLevel, ProgressStatus)
+// are defined in ProgressViewModel.kt to avoid duplication.
+
+// ========== UI-specific Models ==========
 
 /**
- * Pipeline stage identifiers.
- */
-enum class PipelineStage {
-    DOWNLOADING,
-    CHECKING_CAPTIONS,
-    TRANSCRIBING,
-    TRANSLATING,
-    RENDERING
-}
-
-/**
- * Status of a pipeline stage.
- */
-sealed class StageStatus {
-    data object Pending : StageStatus()
-    data class InProgress(val progress: Float = 0f, val message: String? = null) : StageStatus()
-    data class Complete(val message: String? = null) : StageStatus()
-    data class Skipped(val reason: String) : StageStatus()
-    data class Failed(val error: String) : StageStatus()
-}
-
-/**
- * State for a single pipeline stage.
- */
-data class StageState(
-    val stage: PipelineStage,
-    val status: StageStatus = StageStatus.Pending
-)
-
-/**
- * Log entry for the log panel.
- */
-data class LogEntry(
-    val timestamp: LocalTime,
-    val message: String,
-    val level: LogLevel = LogLevel.INFO
-)
-
-/**
- * Log severity levels.
- */
-enum class LogLevel {
-    DEBUG,
-    INFO,
-    WARNING,
-    ERROR
-}
-
-/**
- * Overall progress screen state.
- */
-sealed class ProgressState {
-    /**
-     * Translation is in progress.
-     */
-    data class Processing(
-        val stages: List<StageState>,
-        val currentStage: PipelineStage,
-        val overallProgress: Float
-    ) : ProgressState()
-
-    /**
-     * Translation completed successfully.
-     */
-    data class Complete(
-        val outputFiles: List<OutputFile>,
-        val outputDirectory: String,
-        val processingTime: Long // milliseconds
-    ) : ProgressState()
-
-    /**
-     * Translation failed with an error.
-     */
-    data class Error(
-        val failedStage: PipelineStage,
-        val errorMessage: String,
-        val errorDetails: String?,
-        val suggestions: List<String>
-    ) : ProgressState()
-}
-
-/**
- * Output file information.
+ * Output file information for the success display.
  */
 data class OutputFile(
     val name: String,
@@ -144,16 +67,270 @@ enum class OutputFileType {
     SUBTITLE
 }
 
+// ========== Legacy Models (for backwards compatibility) ==========
+
+/**
+ * Legacy pipeline stage identifiers.
+ */
+enum class LegacyPipelineStage {
+    DOWNLOADING,
+    CHECKING_CAPTIONS,
+    TRANSCRIBING,
+    TRANSLATING,
+    RENDERING
+}
+
+/**
+ * Legacy status of a pipeline stage.
+ */
+sealed class LegacyStageStatus {
+    data object Pending : LegacyStageStatus()
+    data class InProgress(val progress: Float = 0f, val message: String? = null) : LegacyStageStatus()
+    data class Complete(val message: String? = null) : LegacyStageStatus()
+    data class Skipped(val reason: String) : LegacyStageStatus()
+    data class Failed(val error: String) : LegacyStageStatus()
+}
+
+/**
+ * Legacy state for a single pipeline stage.
+ */
+data class LegacyStageState(
+    val stage: LegacyPipelineStage,
+    val status: LegacyStageStatus = LegacyStageStatus.Pending
+)
+
+/**
+ * Legacy log entry for the log panel.
+ */
+data class LegacyLogEntry(
+    val timestamp: LocalTime,
+    val message: String,
+    val level: LegacyLogLevel = LegacyLogLevel.INFO
+)
+
+/**
+ * Legacy log severity levels.
+ */
+enum class LegacyLogLevel {
+    DEBUG,
+    INFO,
+    WARNING,
+    ERROR
+}
+
+/**
+ * Legacy overall progress screen state.
+ */
+sealed class ProgressState {
+    data class Processing(
+        val stages: List<LegacyStageState>,
+        val currentStage: LegacyPipelineStage,
+        val overallProgress: Float
+    ) : ProgressState()
+
+    data class Complete(
+        val outputFiles: List<OutputFile>,
+        val outputDirectory: String,
+        val processingTime: Long
+    ) : ProgressState()
+
+    data class Error(
+        val failedStage: LegacyPipelineStage,
+        val errorMessage: String,
+        val errorDetails: String?,
+        val suggestions: List<String>
+    ) : ProgressState()
+}
+
 // ========== Main Screen ==========
 
 /**
- * Progress screen showing translation pipeline status.
+ * Progress screen using ViewModel for state management.
  *
- * Displays:
- * - Video info card with title and URL
- * - Pipeline progress with stage indicators
- * - Collapsible log panel
- * - Action buttons (Cancel/Complete/Error actions)
+ * This is the recommended way to use ProgressScreen.
+ *
+ * @param appModule Application module for services.
+ * @param viewModel ViewModel managing the progress state.
+ * @param onTranslateAnother Called to start a new translation.
+ * @param onOpenSettings Called to open settings.
+ * @param modifier Modifier for the screen.
+ */
+@Composable
+fun ProgressScreen(
+    appModule: AppModule,
+    viewModel: ProgressViewModel,
+    onTranslateAnother: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val i18n = appModule.i18nManager
+    val state = viewModel.state
+    var showCancelConfirmation by remember { mutableStateOf(false) }
+    var logsExpanded by remember { mutableStateOf(true) }
+
+    // Start translation when screen is first displayed
+    LaunchedEffect(Unit) {
+        viewModel.startTranslation()
+    }
+
+    // Dispose ViewModel when leaving
+    DisposableEffect(Unit) {
+        onDispose { viewModel.dispose() }
+    }
+
+    // Cancel confirmation dialog
+    if (showCancelConfirmation) {
+        ConfirmDialog(
+            title = i18n["progress.cancel.title"],
+            message = i18n["progress.cancel.description"],
+            confirmText = i18n["progress.cancel.confirm"],
+            cancelText = i18n["progress.cancel.continue"],
+            style = ConfirmDialogStyle.Warning,
+            onConfirm = {
+                showCancelConfirmation = false
+                viewModel.cancelTranslation()
+            },
+            onDismiss = { showCancelConfirmation = false }
+        )
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        // Header
+        ProgressHeader(
+            title = when (state.status) {
+                ProgressStatus.Processing -> i18n["progress.title"]
+                ProgressStatus.Complete -> i18n["progress.complete.title"]
+                ProgressStatus.Error -> i18n["progress.error.title"]
+                ProgressStatus.Cancelled -> i18n["progress.cancelled.title"]
+            },
+            showSuccessIcon = state.status == ProgressStatus.Complete,
+            showErrorIcon = state.status == ProgressStatus.Error
+        )
+
+        // Scrollable content
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Video Info Card
+            VideoInfoCard(
+                videoInfo = state.videoInfo,
+                i18n = i18n
+            )
+
+            // Main content based on state
+            when (state.status) {
+                ProgressStatus.Processing, ProgressStatus.Cancelled -> {
+                    // Pipeline Progress Card
+                    PipelineProgressCardFromState(
+                        stages = state.stages,
+                        i18n = i18n
+                    )
+
+                    // Overall progress
+                    OverallProgressBar(
+                        progress = state.overallProgress,
+                        i18n = i18n
+                    )
+                }
+
+                ProgressStatus.Complete -> {
+                    // Success Card - build output files from result
+                    val outputFiles = buildOutputFilesFromResult(state, viewModel.job)
+                    SuccessCard(
+                        outputFiles = outputFiles,
+                        outputDirectory = viewModel.job.outputOptions.outputDirectory,
+                        processingTime = state.result?.duration ?: 0L,
+                        i18n = i18n,
+                        onOpenFolder = { viewModel.openOutputFolder() }
+                    )
+                }
+
+                ProgressStatus.Error -> {
+                    // Error Card
+                    val error = state.error
+                    val failedStage = state.stages.find { it.status == StageStatus.Error }
+                    ErrorCardFromState(
+                        failedStage = failedStage?.pipelineStage ?: PipelineStageName.DOWNLOAD,
+                        error = error,
+                        i18n = i18n
+                    )
+                }
+            }
+
+            // Collapsible Log Panel
+            LogPanelFromState(
+                logs = state.logEntries,
+                expanded = logsExpanded,
+                onToggleExpanded = { logsExpanded = !logsExpanded },
+                i18n = i18n
+            )
+        }
+
+        // Footer with action buttons
+        ProgressFooterFromState(
+            status = state.status,
+            outputDirectory = viewModel.job.outputOptions.outputDirectory,
+            i18n = i18n,
+            onCancel = { showCancelConfirmation = true },
+            onOpenFolder = { viewModel.openOutputFolder() },
+            onTranslateAnother = onTranslateAnother,
+            onOpenSettings = onOpenSettings,
+            onRetry = { viewModel.retryTranslation() }
+        )
+    }
+}
+
+/**
+ * Builds output file list from the result state.
+ */
+private fun buildOutputFilesFromResult(state: ProgressScreenState, job: TranslationJob): List<OutputFile> {
+    val result = state.result ?: return emptyList()
+
+    val files = mutableListOf<OutputFile>()
+
+    // Video file
+    val videoFile = File(result.videoFile)
+    files.add(
+        OutputFile(
+            name = videoFile.name,
+            path = result.videoFile,
+            size = videoFile.length(),
+            type = OutputFileType.VIDEO
+        )
+    )
+
+    // Subtitle file if exists
+    result.subtitleFile?.let { srtPath ->
+        val srtFile = File(srtPath)
+        if (srtFile.exists()) {
+            files.add(
+                OutputFile(
+                    name = srtFile.name,
+                    path = srtPath,
+                    size = srtFile.length(),
+                    type = OutputFileType.SUBTITLE
+                )
+            )
+        }
+    }
+
+    return files
+}
+
+// ========== Legacy Screen (for backwards compatibility) ==========
+
+/**
+ * Legacy progress screen with direct state parameters.
+ *
+ * Consider using the ViewModel-based overload instead.
  *
  * @param appModule Application module for services.
  * @param job The translation job being processed.
@@ -171,7 +348,7 @@ fun ProgressScreen(
     appModule: AppModule,
     job: TranslationJob,
     progressState: ProgressState,
-    logs: List<LogEntry>,
+    logs: List<LegacyLogEntry>,
     onCancel: () -> Unit,
     onOpenFolder: (String) -> Unit,
     onTranslateAnother: () -> Unit,
@@ -411,10 +588,13 @@ private fun VideoInfoCard(
     }
 }
 
-// ========== Pipeline Progress Card ==========
+// ========== Pipeline Progress Card (ViewModel-based) ==========
 
+/**
+ * Pipeline progress card for ViewModel-based state.
+ */
 @Composable
-private fun PipelineProgressCard(
+private fun PipelineProgressCardFromState(
     stages: List<StageState>,
     i18n: I18nManager,
     modifier: Modifier = Modifier
@@ -436,7 +616,249 @@ private fun PipelineProgressCard(
             )
 
             stages.forEachIndexed { index, stageState ->
-                StageRow(
+                StageRowFromState(
+                    stageState = stageState,
+                    i18n = i18n
+                )
+
+                if (index < stages.lastIndex) {
+                    // Connector line
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 15.dp)
+                            .width(2.dp)
+                            .height(12.dp)
+                            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Stage row for ViewModel-based state.
+ */
+@Composable
+private fun StageRowFromState(
+    stageState: StageState,
+    i18n: I18nManager
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Status icon
+        StageIconFromStatus(status = stageState.status)
+
+        // Stage info
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = stageState.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = if (stageState.status == StageStatus.InProgress) FontWeight.Medium else FontWeight.Normal
+            )
+
+            // Progress bar for in-progress stages
+            if (stageState.status == StageStatus.InProgress && stageState.progress > 0) {
+                LinearProgressIndicator(
+                    progress = { stageState.progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            }
+
+            // Status message
+            stageState.message?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (stageState.status == StageStatus.Error) AppColors.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        // Status label
+        StatusLabelFromStatus(status = stageState.status, i18n = i18n)
+    }
+}
+
+/**
+ * Stage icon based on StageStatus enum.
+ */
+@Composable
+private fun StageIconFromStatus(status: StageStatus) {
+    val size = 32.dp
+    val iconSize = 18.dp
+
+    when (status) {
+        StageStatus.Pending -> {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = CircleShape,
+                modifier = Modifier.size(size)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.outline)
+                    )
+                }
+            }
+        }
+
+        StageStatus.InProgress -> {
+            Surface(
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                shape = CircleShape,
+                modifier = Modifier.size(size)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    val infiniteTransition = rememberInfiniteTransition(label = "spin")
+                    val rotation by infiniteTransition.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(1000, easing = LinearEasing),
+                            repeatMode = RepeatMode.Restart
+                        ),
+                        label = "rotation"
+                    )
+
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .size(iconSize)
+                            .rotate(rotation)
+                    )
+                }
+            }
+        }
+
+        StageStatus.Complete -> {
+            Surface(
+                color = AppColors.success.copy(alpha = 0.15f),
+                shape = CircleShape,
+                modifier = Modifier.size(size)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = AppColors.success,
+                        modifier = Modifier.size(iconSize)
+                    )
+                }
+            }
+        }
+
+        StageStatus.Skipped -> {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = CircleShape,
+                modifier = Modifier.size(size)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(iconSize)
+                    )
+                }
+            }
+        }
+
+        StageStatus.Error -> {
+            Surface(
+                color = AppColors.error.copy(alpha = 0.15f),
+                shape = CircleShape,
+                modifier = Modifier.size(size)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        tint = AppColors.error,
+                        modifier = Modifier.size(iconSize)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Status label based on StageStatus enum.
+ */
+@Composable
+private fun StatusLabelFromStatus(
+    status: StageStatus,
+    i18n: I18nManager
+) {
+    val (text, color) = when (status) {
+        StageStatus.Pending -> i18n["progress.status.pending"] to MaterialTheme.colorScheme.onSurfaceVariant
+        StageStatus.InProgress -> i18n["progress.status.inProgress"] to MaterialTheme.colorScheme.primary
+        StageStatus.Complete -> i18n["progress.status.complete"] to AppColors.success
+        StageStatus.Skipped -> i18n["progress.status.skipped"] to MaterialTheme.colorScheme.onSurfaceVariant
+        StageStatus.Error -> i18n["progress.status.failed"] to AppColors.error
+    }
+
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = color,
+        fontWeight = FontWeight.Medium
+    )
+}
+
+// ========== Pipeline Progress Card (Legacy) ==========
+
+/**
+ * Pipeline progress card for legacy state.
+ */
+@Composable
+private fun PipelineProgressCard(
+    stages: List<LegacyStageState>,
+    i18n: I18nManager,
+    modifier: Modifier = Modifier
+) {
+    AppCard(
+        modifier = modifier.fillMaxWidth(),
+        elevation = AppCardElevation.Low
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = i18n["progress.pipeline.title"],
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            stages.forEachIndexed { index, stageState ->
+                LegacyStageRow(
                     stage = stageState.stage,
                     status = stageState.status,
                     i18n = i18n
@@ -458,9 +880,9 @@ private fun PipelineProgressCard(
 }
 
 @Composable
-private fun StageRow(
-    stage: PipelineStage,
-    status: StageStatus,
+private fun LegacyStageRow(
+    stage: LegacyPipelineStage,
+    status: LegacyStageStatus,
     i18n: I18nManager
 ) {
     Row(
@@ -471,7 +893,7 @@ private fun StageRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Status icon
-        StageIcon(status = status)
+        LegacyStageIcon(status = status)
 
         // Stage info
         Column(
@@ -482,11 +904,11 @@ private fun StageRow(
                 text = getStageName(stage, i18n),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = if (status is StageStatus.InProgress) FontWeight.Medium else FontWeight.Normal
+                fontWeight = if (status is LegacyStageStatus.InProgress) FontWeight.Medium else FontWeight.Normal
             )
 
             // Progress bar for in-progress stages
-            if (status is StageStatus.InProgress && status.progress > 0) {
+            if (status is LegacyStageStatus.InProgress && status.progress > 0) {
                 LinearProgressIndicator(
                     progress = { status.progress },
                     modifier = Modifier
@@ -500,10 +922,10 @@ private fun StageRow(
 
             // Status message
             val message = when (status) {
-                is StageStatus.InProgress -> status.message
-                is StageStatus.Complete -> status.message
-                is StageStatus.Skipped -> status.reason
-                is StageStatus.Failed -> status.error
+                is LegacyStageStatus.InProgress -> status.message
+                is LegacyStageStatus.Complete -> status.message
+                is LegacyStageStatus.Skipped -> status.reason
+                is LegacyStageStatus.Failed -> status.error
                 else -> null
             }
 
@@ -512,8 +934,8 @@ private fun StageRow(
                     text = message,
                     style = MaterialTheme.typography.bodySmall,
                     color = when (status) {
-                        is StageStatus.Failed -> AppColors.error
-                        is StageStatus.Skipped -> MaterialTheme.colorScheme.onSurfaceVariant
+                        is LegacyStageStatus.Failed -> AppColors.error
+                        is LegacyStageStatus.Skipped -> MaterialTheme.colorScheme.onSurfaceVariant
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     maxLines = 1,
@@ -523,17 +945,17 @@ private fun StageRow(
         }
 
         // Status label
-        StatusLabel(status = status, i18n = i18n)
+        LegacyStatusLabel(status = status, i18n = i18n)
     }
 }
 
 @Composable
-private fun StageIcon(status: StageStatus) {
+private fun LegacyStageIcon(status: LegacyStageStatus) {
     val size = 32.dp
     val iconSize = 18.dp
 
     when (status) {
-        is StageStatus.Pending -> {
+        is LegacyStageStatus.Pending -> {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = CircleShape,
@@ -550,7 +972,7 @@ private fun StageIcon(status: StageStatus) {
             }
         }
 
-        is StageStatus.InProgress -> {
+        is LegacyStageStatus.InProgress -> {
             Surface(
                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                 shape = CircleShape,
@@ -581,7 +1003,7 @@ private fun StageIcon(status: StageStatus) {
             }
         }
 
-        is StageStatus.Complete -> {
+        is LegacyStageStatus.Complete -> {
             Surface(
                 color = AppColors.success.copy(alpha = 0.15f),
                 shape = CircleShape,
@@ -598,7 +1020,7 @@ private fun StageIcon(status: StageStatus) {
             }
         }
 
-        is StageStatus.Skipped -> {
+        is LegacyStageStatus.Skipped -> {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = CircleShape,
@@ -615,7 +1037,7 @@ private fun StageIcon(status: StageStatus) {
             }
         }
 
-        is StageStatus.Failed -> {
+        is LegacyStageStatus.Failed -> {
             Surface(
                 color = AppColors.error.copy(alpha = 0.15f),
                 shape = CircleShape,
@@ -635,13 +1057,13 @@ private fun StageIcon(status: StageStatus) {
 }
 
 @Composable
-private fun StatusLabel(
-    status: StageStatus,
+private fun LegacyStatusLabel(
+    status: LegacyStageStatus,
     i18n: I18nManager
 ) {
     val (text, color) = when (status) {
-        is StageStatus.Pending -> i18n["progress.status.pending"] to MaterialTheme.colorScheme.onSurfaceVariant
-        is StageStatus.InProgress -> {
+        is LegacyStageStatus.Pending -> i18n["progress.status.pending"] to MaterialTheme.colorScheme.onSurfaceVariant
+        is LegacyStageStatus.InProgress -> {
             val progressText = if (status.progress > 0) {
                 "${(status.progress * 100).toInt()}%"
             } else {
@@ -649,9 +1071,9 @@ private fun StatusLabel(
             }
             progressText to MaterialTheme.colorScheme.primary
         }
-        is StageStatus.Complete -> i18n["progress.status.complete"] to AppColors.success
-        is StageStatus.Skipped -> i18n["progress.status.skipped"] to MaterialTheme.colorScheme.onSurfaceVariant
-        is StageStatus.Failed -> i18n["progress.status.failed"] to AppColors.error
+        is LegacyStageStatus.Complete -> i18n["progress.status.complete"] to AppColors.success
+        is LegacyStageStatus.Skipped -> i18n["progress.status.skipped"] to MaterialTheme.colorScheme.onSurfaceVariant
+        is LegacyStageStatus.Failed -> i18n["progress.status.failed"] to AppColors.error
     }
 
     Text(
@@ -857,11 +1279,144 @@ private fun OutputFileRow(file: OutputFile) {
     }
 }
 
-// ========== Error Card ==========
+// ========== Error Card (ViewModel-based) ==========
 
+/**
+ * Error card for ViewModel-based state.
+ */
+@Composable
+private fun ErrorCardFromState(
+    failedStage: PipelineStageName,
+    error: PipelineError?,
+    i18n: I18nManager,
+    modifier: Modifier = Modifier
+) {
+    AppCard(
+        modifier = modifier.fillMaxWidth(),
+        elevation = AppCardElevation.Low
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Error header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        color = AppColors.error.copy(alpha = 0.15f),
+                        shape = CircleShape,
+                        modifier = Modifier.size(64.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Error,
+                                contentDescription = null,
+                                tint = AppColors.error,
+                                modifier = Modifier.size(40.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = i18n["progress.error.message"],
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Text(
+                        text = i18n["progress.error.stage", getStageNameFromPipeline(failedStage, i18n)],
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+            // Error details
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = i18n["progress.error.details"],
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Surface(
+                    color = AppColors.error.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = error?.message ?: i18n["progress.error.unknown"],
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = AppColors.error
+                        )
+
+                        error?.suggestion?.let { suggestion ->
+                            Text(
+                                text = suggestion,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Suggestion from error
+            error?.suggestion?.let { suggestion ->
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = i18n["progress.error.suggestions"],
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Text(
+                            text = "•",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = suggestion,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ========== Error Card (Legacy) ==========
+
+/**
+ * Error card for legacy state.
+ */
 @Composable
 private fun ErrorCard(
-    failedStage: PipelineStage,
+    failedStage: LegacyPipelineStage,
     errorMessage: String,
     errorDetails: String?,
     suggestions: List<String>,
@@ -991,10 +1546,13 @@ private fun ErrorCard(
     }
 }
 
-// ========== Log Panel ==========
+// ========== Log Panel (ViewModel-based) ==========
 
+/**
+ * Log panel for ViewModel-based state.
+ */
 @Composable
-private fun LogPanel(
+private fun LogPanelFromState(
     logs: List<LogEntry>,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
@@ -1050,7 +1608,7 @@ private fun LogPanel(
                 Column {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
 
-                    LogContent(logs = logs)
+                    LogContentFromState(logs = logs)
                 }
             }
         }
@@ -1058,7 +1616,7 @@ private fun LogPanel(
 }
 
 @Composable
-private fun LogContent(logs: List<LogEntry>) {
+private fun LogContentFromState(logs: List<LogEntry>) {
     val listState = rememberLazyListState()
     val timeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm:ss") }
 
@@ -1102,10 +1660,10 @@ private fun LogContent(logs: List<LogEntry>) {
                             fontSize = 11.sp
                         ),
                         color = when (entry.level) {
-                            LogLevel.DEBUG -> Color(0xFF888888)
-                            LogLevel.INFO -> Color(0xFFCCCCCC)
-                            LogLevel.WARNING -> Color(0xFFF59E0B)
-                            LogLevel.ERROR -> Color(0xFFEF4444)
+                            LogEntryLevel.DEBUG -> Color(0xFF888888)
+                            LogEntryLevel.INFO -> Color(0xFFCCCCCC)
+                            LogEntryLevel.WARNING -> Color(0xFFF59E0B)
+                            LogEntryLevel.ERROR -> Color(0xFFEF4444)
                         }
                     )
                 }
@@ -1114,8 +1672,236 @@ private fun LogContent(logs: List<LogEntry>) {
     }
 }
 
-// ========== Footer ==========
+// ========== Log Panel (Legacy) ==========
 
+/**
+ * Log panel for legacy state.
+ */
+@Composable
+private fun LogPanel(
+    logs: List<LegacyLogEntry>,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    i18n: I18nManager,
+    modifier: Modifier = Modifier
+) {
+    AppCard(
+        modifier = modifier.fillMaxWidth(),
+        elevation = AppCardElevation.Low
+    ) {
+        Column {
+            // Header (always visible)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggleExpanded() }
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = i18n["progress.log.title"],
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (expanded) i18n["action.hide"] else i18n["action.show"],
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Icon(
+                        imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Log content (expandable)
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    LegacyLogContent(logs = logs)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegacyLogContent(logs: List<LegacyLogEntry>) {
+    val listState = rememberLazyListState()
+    val timeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm:ss") }
+
+    // Auto-scroll to bottom when new logs are added
+    LaunchedEffect(logs.size) {
+        if (logs.isNotEmpty()) {
+            listState.animateScrollToItem(logs.lastIndex)
+        }
+    }
+
+    Surface(
+        color = Color(0xFF1A1A1A),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(200.dp)
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(logs) { entry ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Timestamp
+                    Text(
+                        text = "[${entry.timestamp.format(timeFormatter)}]",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        ),
+                        color = Color(0xFF888888)
+                    )
+
+                    // Message
+                    Text(
+                        text = entry.message,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        ),
+                        color = when (entry.level) {
+                            LegacyLogLevel.DEBUG -> Color(0xFF888888)
+                            LegacyLogLevel.INFO -> Color(0xFFCCCCCC)
+                            LegacyLogLevel.WARNING -> Color(0xFFF59E0B)
+                            LegacyLogLevel.ERROR -> Color(0xFFEF4444)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ========== Footer (ViewModel-based) ==========
+
+/**
+ * Footer for ViewModel-based state.
+ */
+@Composable
+private fun ProgressFooterFromState(
+    status: ProgressStatus,
+    outputDirectory: String,
+    i18n: I18nManager,
+    onCancel: () -> Unit,
+    onOpenFolder: () -> Unit,
+    onTranslateAnother: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 4.dp,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            when (status) {
+                ProgressStatus.Processing -> {
+                    AppButton(
+                        text = i18n["action.cancel"],
+                        onClick = onCancel,
+                        style = ButtonStyle.Secondary,
+                        size = ButtonSize.Large
+                    )
+                }
+
+                ProgressStatus.Complete -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        AppButton(
+                            text = i18n["progress.complete.openFolder"],
+                            onClick = onOpenFolder,
+                            style = ButtonStyle.Secondary,
+                            size = ButtonSize.Large,
+                            leadingIcon = Icons.Default.Folder
+                        )
+
+                        AppButton(
+                            text = i18n["progress.complete.translateAnother"],
+                            onClick = onTranslateAnother,
+                            style = ButtonStyle.Primary,
+                            size = ButtonSize.Large
+                        )
+                    }
+                }
+
+                ProgressStatus.Error -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        AppButton(
+                            text = i18n["progress.error.openSettings"],
+                            onClick = onOpenSettings,
+                            style = ButtonStyle.Secondary,
+                            size = ButtonSize.Large,
+                            leadingIcon = Icons.Default.Settings
+                        )
+
+                        AppButton(
+                            text = i18n["progress.error.tryAgain"],
+                            onClick = onRetry,
+                            style = ButtonStyle.Primary,
+                            size = ButtonSize.Large,
+                            leadingIcon = Icons.Default.Refresh
+                        )
+                    }
+                }
+
+                ProgressStatus.Cancelled -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        AppButton(
+                            text = i18n["progress.complete.translateAnother"],
+                            onClick = onTranslateAnother,
+                            style = ButtonStyle.Primary,
+                            size = ButtonSize.Large
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ========== Footer (Legacy) ==========
+
+/**
+ * Footer for legacy state.
+ */
 @Composable
 private fun ProgressFooter(
     state: ProgressState,
@@ -1198,13 +1984,23 @@ private fun ProgressFooter(
 
 // ========== Helper Functions ==========
 
-private fun getStageName(stage: PipelineStage, i18n: I18nManager): String {
+private fun getStageName(stage: LegacyPipelineStage, i18n: I18nManager): String {
     return when (stage) {
-        PipelineStage.DOWNLOADING -> i18n["progress.stage.downloading"]
-        PipelineStage.CHECKING_CAPTIONS -> i18n["progress.stage.checkingCaptions"]
-        PipelineStage.TRANSCRIBING -> i18n["progress.stage.transcribing"]
-        PipelineStage.TRANSLATING -> i18n["progress.stage.translating"]
-        PipelineStage.RENDERING -> i18n["progress.stage.rendering"]
+        LegacyPipelineStage.DOWNLOADING -> i18n["progress.stage.downloading"]
+        LegacyPipelineStage.CHECKING_CAPTIONS -> i18n["progress.stage.checkingCaptions"]
+        LegacyPipelineStage.TRANSCRIBING -> i18n["progress.stage.transcribing"]
+        LegacyPipelineStage.TRANSLATING -> i18n["progress.stage.translating"]
+        LegacyPipelineStage.RENDERING -> i18n["progress.stage.rendering"]
+    }
+}
+
+private fun getStageNameFromPipeline(stage: PipelineStageName, i18n: I18nManager): String {
+    return when (stage) {
+        PipelineStageName.DOWNLOAD -> i18n["progress.stage.downloading"]
+        PipelineStageName.CAPTION_CHECK -> i18n["progress.stage.checkingCaptions"]
+        PipelineStageName.TRANSCRIPTION -> i18n["progress.stage.transcribing"]
+        PipelineStageName.TRANSLATION -> i18n["progress.stage.translating"]
+        PipelineStageName.RENDERING -> i18n["progress.stage.rendering"]
     }
 }
 

@@ -1,30 +1,168 @@
 package com.ericjesse.videotranslator.ui.screens.progress
 
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.TranslationResult
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.pipeline.ErrorCode
+import com.ericjesse.videotranslator.domain.pipeline.ErrorMapper
+import com.ericjesse.videotranslator.domain.pipeline.PipelineCheckpoint
+import com.ericjesse.videotranslator.domain.pipeline.PipelineError
+import com.ericjesse.videotranslator.domain.pipeline.PipelineException
+import com.ericjesse.videotranslator.domain.pipeline.PipelineLogEvent
+import com.ericjesse.videotranslator.domain.pipeline.PipelineOrchestrator
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStageName
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStage as DomainPipelineStage
+import com.ericjesse.videotranslator.domain.pipeline.LogLevel as DomainLogLevel
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.onCompletion
 import java.awt.Desktop
 import java.io.File
+import java.time.Instant
 import java.time.LocalTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 private val logger = KotlinLogging.logger {}
+
+// ========== State Models ==========
+
+/**
+ * Main state class for the progress screen.
+ *
+ * @property videoInfo Information about the video being processed.
+ * @property stages List of all pipeline stages with their current state.
+ * @property currentStageIndex Index of the currently executing stage (0-based).
+ * @property overallProgress Overall progress from 0.0 to 1.0.
+ * @property logEntries Log entries for the log panel.
+ * @property status Current status of the translation process.
+ * @property result Translation result on success, null otherwise.
+ * @property error Error details on failure, null otherwise.
+ */
+data class ProgressScreenState(
+    val videoInfo: VideoInfo,
+    val stages: List<StageState> = emptyList(),
+    val currentStageIndex: Int = 0,
+    val overallProgress: Float = 0f,
+    val logEntries: List<LogEntry> = emptyList(),
+    val status: ProgressStatus = ProgressStatus.Processing,
+    val result: TranslationResult? = null,
+    val error: PipelineError? = null
+) {
+    /**
+     * Gets the currently executing stage, if any.
+     */
+    val currentStage: StageState?
+        get() = stages.getOrNull(currentStageIndex)
+
+    /**
+     * Whether the process can be cancelled.
+     */
+    val canCancel: Boolean
+        get() = status == ProgressStatus.Processing
+
+    /**
+     * Whether the process has finished (success, error, or cancelled).
+     */
+    val isFinished: Boolean
+        get() = status != ProgressStatus.Processing
+}
+
+/**
+ * State for a single pipeline stage.
+ *
+ * @property name Display name of the stage.
+ * @property pipelineStage The underlying pipeline stage name.
+ * @property status Current status of the stage.
+ * @property progress Progress from 0.0 to 1.0 (only relevant when InProgress).
+ * @property message Current status message.
+ * @property details Additional details (e.g., file sizes, counts).
+ */
+data class StageState(
+    val name: String,
+    val pipelineStage: PipelineStageName,
+    val status: StageStatus = StageStatus.Pending,
+    val progress: Float = 0f,
+    val message: String? = null,
+    val details: String? = null
+)
+
+/**
+ * Status of a pipeline stage.
+ */
+enum class StageStatus {
+    /** Stage has not started yet. */
+    Pending,
+
+    /** Stage is currently executing. */
+    InProgress,
+
+    /** Stage completed successfully. */
+    Complete,
+
+    /** Stage was skipped (e.g., captions found, no transcription needed). */
+    Skipped,
+
+    /** Stage failed with an error. */
+    Error
+}
+
+/**
+ * Overall status of the translation process.
+ */
+enum class ProgressStatus {
+    /** Translation is in progress. */
+    Processing,
+
+    /** Translation completed successfully. */
+    Complete,
+
+    /** Translation failed with an error. */
+    Error,
+
+    /** Translation was cancelled by the user. */
+    Cancelled
+}
+
+/**
+ * Log entry for the log panel.
+ *
+ * @property timestamp Time the log entry was created.
+ * @property level Severity level of the log entry.
+ * @property stage Pipeline stage that generated the log, if any.
+ * @property message Log message text.
+ * @property details Additional details, if any.
+ */
+data class LogEntry(
+    val timestamp: LocalTime,
+    val level: LogEntryLevel,
+    val stage: PipelineStageName?,
+    val message: String,
+    val details: String? = null
+)
+
+/**
+ * Log entry severity levels.
+ */
+enum class LogEntryLevel {
+    DEBUG,
+    INFO,
+    WARNING,
+    ERROR
+}
+
+// ========== ViewModel ==========
 
 /**
  * ViewModel for the progress screen.
  *
- * Manages:
- * - Pipeline stage states
- * - Log entries
- * - Overall progress tracking
- * - Translation job execution (placeholder for actual implementation)
+ * Connects to [PipelineOrchestrator.execute] flow and maps emissions to UI state.
+ * Collects log messages for the log panel and handles cancellation.
  *
  * @param appModule Application module for accessing services.
  * @param job The translation job to process.
@@ -36,261 +174,375 @@ class ProgressViewModel(
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 ) {
     private val i18n = appModule.i18nManager
+    private val pipelineOrchestrator = appModule.pipelineOrchestrator
 
     /**
-     * Current progress state.
+     * Current screen state.
      */
-    var progressState by mutableStateOf<ProgressState>(createInitialState())
+    var state by mutableStateOf(createInitialState())
         private set
 
     /**
-     * Log entries.
+     * Whether cancellation has been requested.
      */
-    private val _logs = mutableStateListOf<LogEntry>()
-    val logs: List<LogEntry> get() = _logs
+    private var cancellationRequested = false
 
     /**
-     * Whether the job has been cancelled.
+     * Handle to the pipeline execution job.
      */
-    private var cancelled = false
+    private var pipelineJob: Job? = null
 
     /**
-     * Job handle for the translation process.
-     */
-    private var translationJob: Job? = null
-
-    /**
-     * Start time for processing duration calculation.
+     * Start time for calculating processing duration.
      */
     private var startTime: Long = 0L
 
     init {
-        log(LogLevel.INFO, "Translation job created for: ${job.videoInfo.title}")
+        addLog(LogEntryLevel.INFO, null, "Translation job created for: ${job.videoInfo.title}")
     }
 
     /**
-     * Starts the translation process.
+     * Starts the translation pipeline.
+     * If already running, this is a no-op.
      */
     fun startTranslation() {
-        if (translationJob?.isActive == true) {
-            log(LogLevel.WARNING, "Translation already in progress")
+        if (pipelineJob?.isActive == true) {
+            addLog(LogEntryLevel.WARNING, null, "Translation already in progress")
             return
         }
 
-        cancelled = false
+        cancellationRequested = false
         startTime = System.currentTimeMillis()
 
-        translationJob = scope.launch {
+        pipelineJob = scope.launch {
             try {
-                log(LogLevel.INFO, "Starting translation pipeline...")
-                executeTranslationPipeline()
+                addLog(LogEntryLevel.INFO, null, "Starting translation pipeline...")
+
+                pipelineOrchestrator.execute(job)
+                    .catch { e ->
+                        if (e !is CancellationException) {
+                            addLog(LogEntryLevel.ERROR, null, "Pipeline error: ${e.message}")
+                            handlePipelineError(e)
+                        }
+                    }
+                    .onCompletion { cause ->
+                        if (cause is CancellationException) {
+                            handleCancellation()
+                        }
+                        // Collect final logs from orchestrator
+                        collectOrchestratorLogs()
+                    }
+                    .collect { pipelineStage ->
+                        mapPipelineStageToState(pipelineStage)
+                    }
+
             } catch (e: CancellationException) {
-                log(LogLevel.WARNING, "Translation cancelled by user")
+                handleCancellation()
                 throw e
-            } catch (e: Exception) {
-                log(LogLevel.ERROR, "Translation failed: ${e.message}")
-                handleError(getCurrentStage(), e)
             }
         }
     }
 
     /**
-     * Cancels the translation process.
+     * Requests cancellation of the translation.
+     * The actual cancellation happens asynchronously.
      */
     fun cancelTranslation() {
-        cancelled = true
-        translationJob?.cancel()
-        log(LogLevel.WARNING, "Translation cancelled")
+        if (!state.canCancel) return
+
+        cancellationRequested = true
+        addLog(LogEntryLevel.WARNING, null, "Cancellation requested...")
+
+        pipelineJob?.cancel()
+    }
+
+    /**
+     * Retries the translation after an error.
+     */
+    fun retryTranslation() {
+        // Reset state
+        state = createInitialState()
+        cancellationRequested = false
+
+        // Start fresh
+        startTranslation()
     }
 
     /**
      * Opens the output folder in the system file manager.
      */
-    fun openFolder(path: String) {
+    fun openOutputFolder() {
+        val directory = job.outputOptions.outputDirectory
         try {
-            val file = File(path)
-            if (file.exists()) {
+            val file = File(directory)
+            if (file.exists() && Desktop.isDesktopSupported()) {
                 Desktop.getDesktop().open(file)
-                log(LogLevel.INFO, "Opened folder: $path")
+                addLog(LogEntryLevel.INFO, null, "Opened folder: $directory")
             } else {
-                log(LogLevel.WARNING, "Folder does not exist: $path")
+                addLog(LogEntryLevel.WARNING, null, "Folder does not exist: $directory")
             }
         } catch (e: Exception) {
-            log(LogLevel.ERROR, "Failed to open folder: ${e.message}")
+            addLog(LogEntryLevel.ERROR, null, "Failed to open folder: ${e.message}")
         }
-    }
-
-    /**
-     * Resets the ViewModel for a retry.
-     */
-    fun reset() {
-        cancelled = false
-        _logs.clear()
-        progressState = createInitialState()
     }
 
     /**
      * Cleans up resources.
      */
     fun dispose() {
-        translationJob?.cancel()
+        pipelineJob?.cancel()
         scope.cancel()
     }
 
-    // ========== Pipeline Execution ==========
+    // ========== State Mapping ==========
 
-    private suspend fun executeTranslationPipeline() {
-        // Stage 1: Downloading
-        updateStage(PipelineStage.DOWNLOADING, StageStatus.InProgress(0f, "Connecting to YouTube..."))
-        log(LogLevel.INFO, "Downloading video from YouTube...")
+    /**
+     * Maps a PipelineStage emission to UI state.
+     */
+    private fun mapPipelineStageToState(pipelineStage: DomainPipelineStage) {
+        when (pipelineStage) {
+            is DomainPipelineStage.Idle -> {
+                // Initial state, no action needed
+            }
 
-        // Simulate download progress
-        for (progress in 1..100 step 5) {
-            if (cancelled) throw CancellationException()
-            delay(100)
-            updateStage(
-                PipelineStage.DOWNLOADING,
-                StageStatus.InProgress(
-                    progress / 100f,
-                    "Downloading: ${progress}%"
+            is DomainPipelineStage.Downloading -> {
+                updateStage(
+                    pipelineStage = PipelineStageName.DOWNLOAD,
+                    status = StageStatus.InProgress,
+                    progress = pipelineStage.progress,
+                    message = pipelineStage.message
                 )
-            )
+            }
+
+            is DomainPipelineStage.CheckingCaptions -> {
+                updateStage(
+                    pipelineStage = PipelineStageName.CAPTION_CHECK,
+                    status = StageStatus.InProgress,
+                    progress = 0f,
+                    message = pipelineStage.message
+                )
+            }
+
+            is DomainPipelineStage.Transcribing -> {
+                updateStage(
+                    pipelineStage = PipelineStageName.TRANSCRIPTION,
+                    status = StageStatus.InProgress,
+                    progress = pipelineStage.progress,
+                    message = pipelineStage.message
+                )
+            }
+
+            is DomainPipelineStage.Translating -> {
+                updateStage(
+                    pipelineStage = PipelineStageName.TRANSLATION,
+                    status = StageStatus.InProgress,
+                    progress = pipelineStage.progress,
+                    message = pipelineStage.message
+                )
+            }
+
+            is DomainPipelineStage.Rendering -> {
+                updateStage(
+                    pipelineStage = PipelineStageName.RENDERING,
+                    status = StageStatus.InProgress,
+                    progress = pipelineStage.progress,
+                    message = pipelineStage.message
+                )
+            }
+
+            is DomainPipelineStage.Complete -> {
+                handleCompletion(pipelineStage.result)
+            }
+
+            is DomainPipelineStage.Error -> {
+                handleError(
+                    stageName = pipelineStage.stage,
+                    errorMessage = pipelineStage.error,
+                    suggestion = pipelineStage.suggestion
+                )
+            }
+
+            is DomainPipelineStage.Cancelled -> {
+                handleCancellation()
+            }
         }
+    }
 
-        updateStage(PipelineStage.DOWNLOADING, StageStatus.Complete("Downloaded ${formatSize(45_200_000L)} in 12 seconds"))
-        log(LogLevel.INFO, "Video downloaded successfully")
+    /**
+     * Updates a specific stage's state.
+     */
+    private fun updateStage(
+        pipelineStage: PipelineStageName,
+        status: StageStatus,
+        progress: Float,
+        message: String?,
+        details: String? = null
+    ) {
+        val stageIndex = state.stages.indexOfFirst { it.pipelineStage == pipelineStage }
+        if (stageIndex < 0) return
 
-        // Stage 2: Checking captions
-        updateStage(PipelineStage.CHECKING_CAPTIONS, StageStatus.InProgress(message = "Checking for existing captions..."))
-        log(LogLevel.INFO, "Checking for YouTube captions...")
-        delay(1000)
-
-        // Simulate: no captions found
-        updateStage(PipelineStage.CHECKING_CAPTIONS, StageStatus.Complete("No captions available, will transcribe"))
-        log(LogLevel.INFO, "No captions found, proceeding to transcription")
-
-        // Stage 3: Transcribing
-        updateStage(PipelineStage.TRANSCRIBING, StageStatus.InProgress(0f, "Loading Whisper model..."))
-        log(LogLevel.INFO, "Starting transcription with Whisper ${appModule.configManager.getSettings().transcription.whisperModel} model")
-        delay(500)
-
-        for (progress in 1..100 step 2) {
-            if (cancelled) throw CancellationException()
-            delay(100)
-
-            val timeProcessed = (job.videoInfo.duration * progress / 100).let { formatDuration(it) }
-            val totalTime = formatDuration(job.videoInfo.duration)
-
-            updateStage(
-                PipelineStage.TRANSCRIBING,
-                StageStatus.InProgress(
-                    progress / 100f,
-                    "Processing: $timeProcessed / $totalTime"
-                )
-            )
-
-            if (progress % 20 == 0) {
-                log(LogLevel.INFO, "Transcription progress: ${progress}%")
+        // Mark all previous stages as complete if they're still pending
+        val updatedStages = state.stages.mapIndexed { index, stageState ->
+            when {
+                index < stageIndex && stageState.status == StageStatus.Pending -> {
+                    stageState.copy(status = StageStatus.Complete)
+                }
+                index == stageIndex -> {
+                    stageState.copy(
+                        status = status,
+                        progress = progress,
+                        message = message,
+                        details = details
+                    )
+                }
+                else -> stageState
             }
         }
 
-        updateStage(PipelineStage.TRANSCRIBING, StageStatus.Complete("Transcribed ${calculateSegments(job.videoInfo.duration)} segments"))
-        log(LogLevel.INFO, "Transcription completed")
-
-        // Stage 4: Translating
-        updateStage(PipelineStage.TRANSLATING, StageStatus.InProgress(0f, "Connecting to translation service..."))
-        log(LogLevel.INFO, "Translating to ${job.targetLanguage.displayName}...")
-        delay(500)
-
-        for (progress in 1..100 step 3) {
-            if (cancelled) throw CancellationException()
-            delay(80)
-            updateStage(
-                PipelineStage.TRANSLATING,
-                StageStatus.InProgress(progress / 100f, "Translating segments...")
-            )
-        }
-
-        updateStage(PipelineStage.TRANSLATING, StageStatus.Complete("Translated to ${job.targetLanguage.nativeName}"))
-        log(LogLevel.INFO, "Translation completed")
-
-        // Stage 5: Rendering
-        updateStage(PipelineStage.RENDERING, StageStatus.InProgress(0f, "Preparing video output..."))
-        log(LogLevel.INFO, "Rendering video with subtitles...")
-
-        val renderMessage = if (job.outputOptions.subtitleType == com.ericjesse.videotranslator.domain.model.SubtitleType.BURNED_IN) {
-            "Burning in subtitles..."
-        } else {
-            "Embedding subtitle track..."
-        }
-
-        for (progress in 1..100 step 2) {
-            if (cancelled) throw CancellationException()
-            delay(100)
-            updateStage(
-                PipelineStage.RENDERING,
-                StageStatus.InProgress(progress / 100f, renderMessage)
-            )
-        }
-
-        updateStage(PipelineStage.RENDERING, StageStatus.Complete("Video rendered successfully"))
-        log(LogLevel.INFO, "Video rendering completed")
-
-        // Complete!
-        val processingTime = System.currentTimeMillis() - startTime
-        val outputFiles = buildOutputFileList()
-
-        progressState = ProgressState.Complete(
-            outputFiles = outputFiles,
-            outputDirectory = job.outputOptions.outputDirectory,
-            processingTime = processingTime
-        )
-
-        log(LogLevel.INFO, "Translation completed successfully in ${formatProcessingTime(processingTime)}")
-    }
-
-    // ========== State Management ==========
-
-    private fun createInitialState(): ProgressState.Processing {
-        return ProgressState.Processing(
-            stages = PipelineStage.entries.map { stage ->
-                StageState(stage = stage, status = StageStatus.Pending)
-            },
-            currentStage = PipelineStage.DOWNLOADING,
-            overallProgress = 0f
-        )
-    }
-
-    private fun updateStage(stage: PipelineStage, status: StageStatus) {
-        val currentState = progressState
-        if (currentState !is ProgressState.Processing) return
-
-        val updatedStages = currentState.stages.map { stageState ->
-            if (stageState.stage == stage) {
-                stageState.copy(status = status)
-            } else {
-                stageState
-            }
-        }
-
-        val overallProgress = calculateOverallProgress(updatedStages)
-
-        progressState = currentState.copy(
+        state = state.copy(
             stages = updatedStages,
-            currentStage = stage,
-            overallProgress = overallProgress
+            currentStageIndex = stageIndex,
+            overallProgress = calculateOverallProgress(updatedStages)
         )
     }
 
+    /**
+     * Marks a stage as complete.
+     */
+    private fun markStageComplete(pipelineStage: PipelineStageName, details: String? = null) {
+        updateStage(
+            pipelineStage = pipelineStage,
+            status = StageStatus.Complete,
+            progress = 1f,
+            message = null,
+            details = details
+        )
+    }
+
+    /**
+     * Marks a stage as skipped.
+     */
+    private fun markStageSkipped(pipelineStage: PipelineStageName, reason: String) {
+        val stageIndex = state.stages.indexOfFirst { it.pipelineStage == pipelineStage }
+        if (stageIndex < 0) return
+
+        val updatedStages = state.stages.mapIndexed { index, stageState ->
+            if (index == stageIndex) {
+                stageState.copy(
+                    status = StageStatus.Skipped,
+                    message = reason
+                )
+            } else stageState
+        }
+
+        state = state.copy(
+            stages = updatedStages,
+            overallProgress = calculateOverallProgress(updatedStages)
+        )
+    }
+
+    /**
+     * Handles successful completion.
+     */
+    private fun handleCompletion(result: TranslationResult) {
+        val processingTime = System.currentTimeMillis() - startTime
+        val updatedResult = result.copy(duration = processingTime)
+
+        // Mark all stages as complete
+        val updatedStages = state.stages.map { stage ->
+            if (stage.status == StageStatus.Pending || stage.status == StageStatus.InProgress) {
+                stage.copy(status = StageStatus.Complete, progress = 1f)
+            } else stage
+        }
+
+        state = state.copy(
+            stages = updatedStages,
+            overallProgress = 1f,
+            status = ProgressStatus.Complete,
+            result = updatedResult
+        )
+
+        addLog(LogEntryLevel.INFO, null, "Translation completed successfully in ${formatDuration(processingTime)}")
+    }
+
+    /**
+     * Handles pipeline error.
+     */
+    private fun handleError(stageName: String, errorMessage: String, suggestion: String?) {
+        val pipelineStageName = PipelineStageName.entries.find { it.displayName == stageName }
+
+        // Create a PipelineError for consistency
+        val error = PipelineError(
+            code = ErrorCode.UNKNOWN,
+            stage = pipelineStageName ?: PipelineStageName.DOWNLOAD,
+            message = errorMessage,
+            suggestion = suggestion
+        )
+
+        // Mark the failed stage
+        if (pipelineStageName != null) {
+            val stageIndex = state.stages.indexOfFirst { it.pipelineStage == pipelineStageName }
+            if (stageIndex >= 0) {
+                val updatedStages = state.stages.mapIndexed { index, stageState ->
+                    if (index == stageIndex) {
+                        stageState.copy(
+                            status = StageStatus.Error,
+                            message = errorMessage
+                        )
+                    } else stageState
+                }
+                state = state.copy(stages = updatedStages)
+            }
+        }
+
+        state = state.copy(
+            status = ProgressStatus.Error,
+            error = error
+        )
+
+        addLog(LogEntryLevel.ERROR, pipelineStageName, "Error: $errorMessage")
+    }
+
+    /**
+     * Handles pipeline error from exception.
+     */
+    private fun handlePipelineError(exception: Throwable) {
+        val currentStage = state.currentStage?.pipelineStage ?: PipelineStageName.DOWNLOAD
+
+        val error = if (exception is PipelineException) {
+            exception.error
+        } else {
+            ErrorMapper.mapException(exception as Exception, currentStage)
+        }
+
+        handleError(
+            stageName = error.stage.displayName,
+            errorMessage = error.message,
+            suggestion = error.suggestion
+        )
+    }
+
+    /**
+     * Handles cancellation.
+     */
+    private fun handleCancellation() {
+        state = state.copy(status = ProgressStatus.Cancelled)
+        addLog(LogEntryLevel.WARNING, null, "Translation cancelled by user")
+    }
+
+    /**
+     * Calculates overall progress based on stage states.
+     */
     private fun calculateOverallProgress(stages: List<StageState>): Float {
+        if (stages.isEmpty()) return 0f
+
         val stageWeight = 1f / stages.size
         var totalProgress = 0f
 
-        stages.forEach { stageState ->
-            totalProgress += when (val status = stageState.status) {
-                is StageStatus.Complete -> stageWeight
-                is StageStatus.Skipped -> stageWeight
-                is StageStatus.InProgress -> stageWeight * status.progress
+        stages.forEach { stage ->
+            totalProgress += when (stage.status) {
+                StageStatus.Complete, StageStatus.Skipped -> stageWeight
+                StageStatus.InProgress -> stageWeight * stage.progress
                 else -> 0f
             }
         }
@@ -298,125 +550,125 @@ class ProgressViewModel(
         return totalProgress.coerceIn(0f, 1f)
     }
 
-    private fun getCurrentStage(): PipelineStage {
-        return (progressState as? ProgressState.Processing)?.currentStage ?: PipelineStage.DOWNLOADING
-    }
-
-    private fun handleError(failedStage: PipelineStage, exception: Exception) {
-        val suggestions = when (failedStage) {
-            PipelineStage.DOWNLOADING -> listOf(
-                "Check your internet connection",
-                "Verify the YouTube URL is correct",
-                "Try again in a few minutes"
-            )
-            PipelineStage.CHECKING_CAPTIONS -> listOf(
-                "This is usually not critical, the transcription will be used instead"
-            )
-            PipelineStage.TRANSCRIBING -> listOf(
-                "Re-download the Whisper model in Settings",
-                "Try a different Whisper model",
-                "Ensure you have enough disk space"
-            )
-            PipelineStage.TRANSLATING -> listOf(
-                "Check your translation service configuration in Settings",
-                "Verify your API key is valid",
-                "Try a different translation service"
-            )
-            PipelineStage.RENDERING -> listOf(
-                "Ensure FFmpeg is installed correctly",
-                "Check you have enough disk space",
-                "Verify the output directory is writable"
-            )
-        }
-
-        progressState = ProgressState.Error(
-            failedStage = failedStage,
-            errorMessage = exception.message ?: "Unknown error occurred",
-            errorDetails = exception.stackTraceToString().take(500),
-            suggestions = suggestions
-        )
-    }
-
     // ========== Logging ==========
 
-    private fun log(level: LogLevel, message: String) {
-        _logs.add(
-            LogEntry(
-                timestamp = LocalTime.now(),
-                message = message,
-                level = level
-            )
+    /**
+     * Adds a log entry.
+     */
+    private fun addLog(level: LogEntryLevel, stage: PipelineStageName?, message: String, details: String? = null) {
+        val entry = LogEntry(
+            timestamp = LocalTime.now(),
+            level = level,
+            stage = stage,
+            message = message,
+            details = details
         )
 
+        state = state.copy(
+            logEntries = state.logEntries + entry
+        )
+
+        // Also log to the application logger
         when (level) {
-            LogLevel.DEBUG -> logger.debug { message }
-            LogLevel.INFO -> logger.info { message }
-            LogLevel.WARNING -> logger.warn { message }
-            LogLevel.ERROR -> logger.error { message }
+            LogEntryLevel.DEBUG -> logger.debug { "[${stage?.displayName ?: "Pipeline"}] $message" }
+            LogEntryLevel.INFO -> logger.info { "[${stage?.displayName ?: "Pipeline"}] $message" }
+            LogEntryLevel.WARNING -> logger.warn { "[${stage?.displayName ?: "Pipeline"}] $message" }
+            LogEntryLevel.ERROR -> logger.error { "[${stage?.displayName ?: "Pipeline"}] $message" }
         }
     }
 
-    // ========== Helper Functions ==========
+    /**
+     * Collects log events from the PipelineOrchestrator and adds them to the log panel.
+     */
+    private fun collectOrchestratorLogs() {
+        val orchestratorLogs = pipelineOrchestrator.getLogEvents()
 
-    private fun buildOutputFileList(): List<OutputFile> {
-        val videoTitle = sanitizeFileName(job.videoInfo.title)
-        val langSuffix = job.targetLanguage.code.uppercase()
-        val extension = if (job.outputOptions.subtitleType == com.ericjesse.videotranslator.domain.model.SubtitleType.SOFT) "mkv" else "mp4"
+        orchestratorLogs.forEach { event ->
+            val level = when (event.level) {
+                DomainLogLevel.DEBUG -> LogEntryLevel.DEBUG
+                DomainLogLevel.INFO -> LogEntryLevel.INFO
+                DomainLogLevel.WARNING -> LogEntryLevel.WARNING
+                DomainLogLevel.ERROR -> LogEntryLevel.ERROR
+            }
 
-        val files = mutableListOf<OutputFile>()
+            val details = when (event) {
+                is PipelineLogEvent.Info -> event.details.entries.joinToString(", ") { "${it.key}: ${it.value}" }.takeIf { it.isNotEmpty() }
+                is PipelineLogEvent.Error -> event.stackTrace
+                is PipelineLogEvent.RecoveryAttempt -> "Attempt ${event.attemptNumber}/${event.maxAttempts}, strategy: ${event.strategy}"
+                is PipelineLogEvent.Metric -> "${event.name}: ${event.value} ${event.unit}"
+                else -> null
+            }
 
-        // Video file
-        files.add(
-            OutputFile(
-                name = "${videoTitle}_$langSuffix.$extension",
-                path = "${job.outputOptions.outputDirectory}/${videoTitle}_$langSuffix.$extension",
-                size = 142_500_000L, // Simulated size
-                type = OutputFileType.VIDEO
+            // Convert timestamp
+            val localTime = LocalTime.ofInstant(
+                Instant.ofEpochMilli(event.timestamp),
+                ZoneId.systemDefault()
+            )
+
+            val entry = LogEntry(
+                timestamp = localTime,
+                level = level,
+                stage = event.stage,
+                message = event.message,
+                details = details
+            )
+
+            // Avoid duplicates by checking if we already have this log
+            if (state.logEntries.none { it.timestamp == entry.timestamp && it.message == entry.message }) {
+                state = state.copy(
+                    logEntries = state.logEntries + entry
+                )
+            }
+        }
+    }
+
+    // ========== Helpers ==========
+
+    /**
+     * Creates the initial state with all stages in Pending status.
+     */
+    private fun createInitialState(): ProgressScreenState {
+        val stages = listOf(
+            StageState(
+                name = i18n["progress.stage.downloading"],
+                pipelineStage = PipelineStageName.DOWNLOAD
+            ),
+            StageState(
+                name = i18n["progress.stage.checkingCaptions"],
+                pipelineStage = PipelineStageName.CAPTION_CHECK
+            ),
+            StageState(
+                name = i18n["progress.stage.transcribing"],
+                pipelineStage = PipelineStageName.TRANSCRIPTION
+            ),
+            StageState(
+                name = i18n["progress.stage.translating"],
+                pipelineStage = PipelineStageName.TRANSLATION
+            ),
+            StageState(
+                name = i18n["progress.stage.rendering"],
+                pipelineStage = PipelineStageName.RENDERING
             )
         )
 
-        // SRT file (if exporting)
-        if (job.outputOptions.exportSrt) {
-            files.add(
-                OutputFile(
-                    name = "${videoTitle}_$langSuffix.srt",
-                    path = "${job.outputOptions.outputDirectory}/${videoTitle}_$langSuffix.srt",
-                    size = 4_200L, // Simulated size
-                    type = OutputFileType.SUBTITLE
-                )
-            )
-        }
-
-        return files
+        return ProgressScreenState(
+            videoInfo = job.videoInfo,
+            stages = stages
+        )
     }
 
-    private fun sanitizeFileName(name: String): String {
-        return name.replace(Regex("[^a-zA-Z0-9\\s_-]"), "")
-            .replace(Regex("\\s+"), "_")
-            .take(50)
-    }
-
-    private fun formatSize(bytes: Long): String {
-        val mb = bytes / (1024.0 * 1024.0)
-        return String.format("%.1f MB", mb)
-    }
-
+    /**
+     * Formats duration in milliseconds to a human-readable string.
+     */
     private fun formatDuration(millis: Long): String {
-        val totalSeconds = millis / 1000
-        val minutes = (totalSeconds % 3600) / 60
-        val seconds = totalSeconds % 60
-        return String.format("%02d:%02d", minutes, seconds)
-    }
-
-    private fun formatProcessingTime(millis: Long): String {
         val totalSeconds = millis / 1000
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
-        return if (minutes > 0) "$minutes min $seconds sec" else "$seconds seconds"
-    }
 
-    private fun calculateSegments(durationMillis: Long): Int {
-        // Rough estimate: ~5 second segments
-        return ((durationMillis / 1000) / 5).toInt().coerceAtLeast(1)
+        return if (minutes > 0) {
+            "$minutes min $seconds sec"
+        } else {
+            "$seconds seconds"
+        }
     }
 }
