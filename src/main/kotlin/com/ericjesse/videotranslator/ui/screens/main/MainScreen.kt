@@ -29,6 +29,7 @@ import com.ericjesse.videotranslator.domain.model.TranslationJob
 import com.ericjesse.videotranslator.ui.components.*
 import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
+import com.ericjesse.videotranslator.ui.screens.main.components.BurnedInOptions
 import com.ericjesse.videotranslator.ui.theme.AppColors
 
 /**
@@ -563,21 +564,15 @@ private fun OutputOptionsSection(
                     )
                 }
 
-                // Burned-in options (animated)
-                AnimatedVisibility(
+                // Burned-in options (animated expand/collapse)
+                BurnedInOptions(
+                    i18n = i18n,
                     visible = subtitleType == SubtitleType.BURNED_IN,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
-                ) {
-                    BurnedInOptions(
-                        i18n = i18n,
-                        backgroundColor = backgroundColor,
-                        onBackgroundColorChange = onBackgroundColorChange,
-                        backgroundOpacity = backgroundOpacity,
-                        onBackgroundOpacityChange = onBackgroundOpacityChange,
-                        modifier = Modifier.padding(start = 48.dp, top = 8.dp)
-                    )
-                }
+                    backgroundColor = backgroundColor,
+                    onBackgroundColorChange = onBackgroundColorChange,
+                    backgroundOpacity = backgroundOpacity,
+                    onBackgroundOpacityChange = onBackgroundOpacityChange
+                )
             }
 
             HorizontalDivider(
@@ -605,198 +600,6 @@ private fun OutputOptionsSection(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun BurnedInOptions(
-    i18n: I18nManager,
-    backgroundColor: BackgroundColor,
-    onBackgroundColorChange: (BackgroundColor) -> Unit,
-    backgroundOpacity: Float,
-    onBackgroundOpacityChange: (Float) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var colorExpanded by remember { mutableStateOf(false) }
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                RoundedCornerShape(8.dp)
-            )
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Background Color dropdown
-        Column(
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = i18n["burnedIn.backgroundColor"],
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            ExposedDropdownMenuBox(
-                expanded = colorExpanded,
-                onExpandedChange = { colorExpanded = !colorExpanded }
-            ) {
-                OutlinedTextField(
-                    value = getBackgroundColorDisplayName(backgroundColor, i18n),
-                    onValueChange = {},
-                    readOnly = true,
-                    trailingIcon = {
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = colorExpanded)
-                    },
-                    modifier = Modifier
-                        .menuAnchor()
-                        .fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    textStyle = MaterialTheme.typography.bodySmall
-                )
-
-                ExposedDropdownMenu(
-                    expanded = colorExpanded,
-                    onDismissRequest = { colorExpanded = false }
-                ) {
-                    BackgroundColor.entries.forEach { color ->
-                        DropdownMenuItem(
-                            text = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    // Color swatch
-                                    if (color.hex != null) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(16.dp)
-                                                .background(
-                                                    parseHexColor(color.hex),
-                                                    RoundedCornerShape(4.dp)
-                                                )
-                                        )
-                                    } else {
-                                        // Transparent indicator
-                                        Box(
-                                            modifier = Modifier
-                                                .size(16.dp)
-                                                .background(
-                                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                                    RoundedCornerShape(4.dp)
-                                                )
-                                        )
-                                    }
-                                    Text(getBackgroundColorDisplayName(color, i18n))
-                                }
-                            },
-                            onClick = {
-                                onBackgroundColorChange(color)
-                                colorExpanded = false
-                            },
-                            leadingIcon = if (color == backgroundColor) {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            } else null
-                        )
-                    }
-                }
-            }
-        }
-
-        // Background Opacity slider (only show when a color is selected)
-        AnimatedVisibility(
-            visible = backgroundColor != BackgroundColor.NONE,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = i18n["burnedIn.backgroundOpacity"],
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "${(backgroundOpacity * 100).toInt()}%",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Slider(
-                    value = backgroundOpacity,
-                    onValueChange = onBackgroundOpacityChange,
-                    valueRange = 0f..1f,
-                    steps = 9,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-
-        // Preview
-        Column(
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = i18n["burnedIn.preview"],
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(80.dp)
-                    .background(
-                        Color(0xFF1A1A1A), // Dark video background
-                        RoundedCornerShape(8.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                // Subtitle with background
-                val bgColor = when {
-                    backgroundColor == BackgroundColor.NONE -> Color.Transparent
-                    backgroundColor.hex != null -> parseHexColor(backgroundColor.hex)
-                        .copy(alpha = backgroundOpacity)
-                    else -> Color.Transparent
-                }
-
-                Surface(
-                    color = bgColor,
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        text = i18n["burnedIn.sampleText"],
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun getBackgroundColorDisplayName(color: BackgroundColor, i18n: I18nManager): String {
-    return when (color) {
-        BackgroundColor.NONE -> i18n["burnedIn.color.none"]
-        BackgroundColor.BLACK -> i18n["burnedIn.color.black"]
-        BackgroundColor.DARK_GRAY -> i18n["burnedIn.color.darkGray"]
-        BackgroundColor.WHITE -> i18n["burnedIn.color.white"]
     }
 }
 
