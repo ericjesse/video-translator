@@ -31,6 +31,7 @@ import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.i18n.Locale
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.GeneralTabContent
+import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranscriptionTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranslationTabContent
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.CoroutineScope
@@ -519,58 +520,6 @@ private fun SettingsTabContent(
 
 // ========== Tab Content Placeholders ==========
 // These will be replaced with proper implementations in separate files
-
-@Composable
-private fun TranscriptionTabContent(
-    appModule: AppModule,
-    settings: AppSettings,
-    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit
-) {
-    val i18n = appModule.i18nManager
-
-    Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        // Prefer YouTube captions
-        SettingsCheckbox(
-            label = i18n["settings.transcription.preferYouTubeCaptions"],
-            description = i18n["settings.transcription.preferYouTubeCaptions.description"],
-            checked = settings.transcription.preferYouTubeCaptions,
-            onCheckedChange = { checked ->
-                onUpdateSettings {
-                    it.copy(transcription = it.transcription.copy(preferYouTubeCaptions = checked))
-                }
-            }
-        )
-
-        // Whisper model
-        SettingsSection(title = i18n["settings.transcription.whisperModel"]) {
-            SettingsDropdown(
-                label = i18n["settings.transcription.whisperModel"],
-                value = settings.transcription.whisperModel,
-                options = listOf(
-                    "tiny" to "tiny (75 MB)",
-                    "base" to "base (142 MB)",
-                    "small" to "small (466 MB)",
-                    "medium" to "medium (1.5 GB)",
-                    "large" to "large (2.9 GB)"
-                ),
-                onValueChange = { model ->
-                    onUpdateSettings {
-                        it.copy(transcription = it.transcription.copy(whisperModel = model))
-                    }
-                }
-            )
-        }
-
-        // Model comparison table placeholder
-        SettingsCard {
-            Text(
-                text = i18n["settings.transcription.modelComparison"],
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
 
 @Composable
 private fun SubtitlesTabContent(
