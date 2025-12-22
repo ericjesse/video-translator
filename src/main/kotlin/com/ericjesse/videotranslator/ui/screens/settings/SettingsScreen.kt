@@ -34,6 +34,7 @@ import com.ericjesse.videotranslator.ui.screens.settings.tabs.GeneralTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.SubtitlesTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranscriptionTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranslationTabContent
+import com.ericjesse.videotranslator.ui.screens.settings.tabs.UpdatesTabContent
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -521,68 +522,6 @@ private fun SettingsTabContent(
 
 // ========== Tab Content Placeholders ==========
 // These will be replaced with proper implementations in separate files
-
-@Composable
-private fun UpdatesTabContent(
-    appModule: AppModule,
-    settings: AppSettings,
-    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit
-) {
-    val i18n = appModule.i18nManager
-
-    Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        // Auto check updates
-        SettingsCheckbox(
-            label = i18n["settings.updates.checkAutomatically"],
-            description = null,
-            checked = settings.updates.checkAutomatically,
-            onCheckedChange = { checked ->
-                onUpdateSettings {
-                    it.copy(updates = it.updates.copy(checkAutomatically = checked))
-                }
-            }
-        )
-
-        // Check interval
-        if (settings.updates.checkAutomatically) {
-            SettingsSection(title = i18n["settings.updates.checkInterval"]) {
-                SettingsDropdown(
-                    label = i18n["settings.updates.checkInterval"],
-                    value = settings.updates.checkIntervalDays.toString(),
-                    options = listOf(
-                        "1" to i18n["settings.updates.interval.daily"],
-                        "7" to i18n["settings.updates.interval.weekly"],
-                        "30" to i18n["settings.updates.interval.monthly"]
-                    ),
-                    onValueChange = { days ->
-                        onUpdateSettings {
-                            it.copy(updates = it.updates.copy(checkIntervalDays = days.toIntOrNull() ?: 7))
-                        }
-                    }
-                )
-            }
-        }
-
-        // Check now button
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AppButton(
-                text = i18n["settings.updates.checkNow"],
-                onClick = { /* TODO: Check for updates */ },
-                style = ButtonStyle.Secondary,
-                size = ButtonSize.Medium
-            )
-
-            Text(
-                text = i18n["settings.updates.lastChecked", "Never"],
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
 
 @Composable
 private fun AboutTabContent(
