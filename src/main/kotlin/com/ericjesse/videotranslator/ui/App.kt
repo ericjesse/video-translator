@@ -2,6 +2,7 @@ package com.ericjesse.videotranslator.ui
 
 import androidx.compose.runtime.*
 import com.ericjesse.videotranslator.di.AppModule
+import com.ericjesse.videotranslator.ui.error.GlobalErrorDisplay
 import com.ericjesse.videotranslator.ui.screens.*
 import com.ericjesse.videotranslator.ui.screens.setup.SetupWizard
 
@@ -51,38 +52,43 @@ fun App(appModule: AppModule) {
         currentScreen = Screen.Main
     }
     
-    // Render current screen
-    when (val screen = currentScreen) {
-        is Screen.SetupWizard -> {
-            SetupWizard(
-                appModule = appModule,
-                onComplete = navigateToMain
-            )
-        }
-        
-        is Screen.Main -> {
-            MainScreen(
-                appModule = appModule,
-                onStartTranslation = navigateToProgress,
-                onOpenSettings = navigateToSettings
-            )
-        }
-        
-        is Screen.Progress -> {
-            ProgressScreen(
-                appModule = appModule,
-                jobId = screen.jobId,
-                onComplete = navigateToMain,
-                onCancel = navigateToMain,
-                onOpenSettings = navigateToSettings
-            )
-        }
-        
-        is Screen.Settings -> {
-            SettingsScreen(
-                appModule = appModule,
-                onBack = navigateBack
-            )
+    // Wrap everything with global error display
+    GlobalErrorDisplay(
+        onNavigateToSettings = navigateToSettings
+    ) {
+        // Render current screen
+        when (val screen = currentScreen) {
+            is Screen.SetupWizard -> {
+                SetupWizard(
+                    appModule = appModule,
+                    onComplete = navigateToMain
+                )
+            }
+
+            is Screen.Main -> {
+                MainScreen(
+                    appModule = appModule,
+                    onStartTranslation = navigateToProgress,
+                    onOpenSettings = navigateToSettings
+                )
+            }
+
+            is Screen.Progress -> {
+                ProgressScreen(
+                    appModule = appModule,
+                    jobId = screen.jobId,
+                    onComplete = navigateToMain,
+                    onCancel = navigateToMain,
+                    onOpenSettings = navigateToSettings
+                )
+            }
+
+            is Screen.Settings -> {
+                SettingsScreen(
+                    appModule = appModule,
+                    onBack = navigateBack
+                )
+            }
         }
     }
 }
