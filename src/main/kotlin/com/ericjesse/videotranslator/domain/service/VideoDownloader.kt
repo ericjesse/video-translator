@@ -2,6 +2,7 @@ package com.ericjesse.videotranslator.domain.service
 
 import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
+import com.ericjesse.videotranslator.domain.validation.*
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
@@ -80,6 +81,8 @@ class VideoDownloader(
         /** Minimum allowed download speed limit in KB/s. */
         const val MIN_RATE_LIMIT_KBPS = 50
     }
+
+    private val videoValidator = VideoValidator()
 
     // ==================== URL Validation ====================
 
@@ -511,6 +514,87 @@ class VideoDownloader(
      */
     suspend fun getVersion(): String? {
         return processExecutor.getVersion(ytDlpPath)
+    }
+
+    // ==================== Video Validation ====================
+
+    /**
+     * Validates video information for edge cases.
+     *
+     * @param videoInfo The video info to validate.
+     * @return VideoValidationResult indicating if the video can be processed.
+     */
+    fun validateVideo(videoInfo: VideoInfo): VideoValidationResult {
+        return videoValidator.validate(videoInfo)
+    }
+
+    /**
+     * Validates full video info including live stream detection.
+     *
+     * @param ytDlpInfo The full yt-dlp video info.
+     * @return VideoValidationResult indicating if the video can be processed.
+     */
+    fun validateYtDlpInfo(ytDlpInfo: YtDlpVideoInfo): VideoValidationResult {
+        // Check for live stream
+        if (ytDlpInfo.isLive == true) {
+            return VideoValidationResult.Invalid(VideoError.LiveStream)
+        }
+
+        // Convert to VideoInfo and validate
+        return videoValidator.validate(ytDlpInfo.toVideoInfo())
+    }
+
+    /**
+     * Fetches and validates video info.
+     * Combines fetching with validation and returns validation result.
+     *
+     * @param url The YouTube URL.
+     * @param options Download options.
+     * @return Pair of VideoInfo and VideoValidationResult.
+     * @throws YtDlpException if fetch fails.
+     */
+    suspend fun fetchAndValidateVideoInfo(
+        url: String,
+        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+    ): Pair<VideoInfo, VideoValidationResult> {
+        // Pre-validate URL for obvious issues
+        val urlValidation = videoValidator.validateUrl(url)
+        if (urlValidation != null) {
+            throw YtDlpException(
+                errorType = YtDlpErrorType.INVALID_URL,
+                userMessage = when (val error = (urlValidation as? VideoValidationResult.Invalid)?.error) {
+                    is VideoError.LiveStream -> error.message
+                    else -> "Invalid video URL"
+                },
+                technicalMessage = "URL validation failed: ${urlValidation}"
+            )
+        }
+
+        val ytDlpInfo = fetchVideoInfoFull(url, options)
+        val videoInfo = ytDlpInfo.toVideoInfo()
+        val validation = validateYtDlpInfo(ytDlpInfo)
+
+        return videoInfo to validation
+    }
+
+    /**
+     * Gets the estimated processing time for a video.
+     *
+     * @param videoInfo The video info.
+     * @return Estimated processing time in minutes.
+     */
+    fun getEstimatedProcessingTime(videoInfo: VideoInfo): Long {
+        return videoValidator.estimateProcessingTime(videoInfo.duration / 1000)
+    }
+
+    /**
+     * Formats video duration for display.
+     *
+     * @param durationMs Duration in milliseconds.
+     * @return Formatted duration string (e.g., "1:23:45").
+     */
+    fun formatDuration(durationMs: Long): String {
+        return VideoValidator.formatDuration(durationMs / 1000)
     }
 
     // ==================== Private Helpers ====================

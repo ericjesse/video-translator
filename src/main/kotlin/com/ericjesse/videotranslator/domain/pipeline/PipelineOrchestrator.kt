@@ -2,6 +2,7 @@ package com.ericjesse.videotranslator.domain.pipeline
 
 import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.domain.service.*
+import com.ericjesse.videotranslator.domain.validation.*
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.resources.*
 import kotlinx.coroutines.CancellationException
@@ -70,6 +71,12 @@ class PipelineOrchestrator(
     private val logEvents = mutableListOf<PipelineLogEvent>()
     private val tempFiles = mutableListOf<File>()
     private var currentCheckpoint: PipelineCheckpoint? = null
+
+    // Validators
+    private val videoValidator = VideoValidator()
+    private val captionValidator = CaptionValidator()
+    private val translationValidator = TranslationValidator()
+    private val outputValidator = OutputValidator()
 
     init {
         checkpointDir.mkdirs()
@@ -284,11 +291,162 @@ class PipelineOrchestrator(
     }
 
     /**
-     * Performs pre-flight resource checks before starting the pipeline.
-     * Returns an error stage if resources are insufficient, null otherwise.
+     * Performs pre-flight validation and resource checks before starting the pipeline.
+     * Returns an error stage if validation fails or resources are insufficient, null otherwise.
      */
     private suspend fun performPreflightResourceChecks(job: TranslationJob): PipelineStage.Error? {
-        // Check disk space before download
+        // 1. Validate video duration and properties
+        val videoValidation = videoValidator.validate(job.videoInfo)
+        when (videoValidation) {
+            is VideoValidationResult.Invalid -> {
+                val error = videoValidation.error
+                emitLog(PipelineLogEvent.Error(
+                    stage = null,
+                    message = "Video validation failed: ${error.message}",
+                    error = PipelineError(
+                        code = when (error) {
+                            is VideoError.TooShort -> ErrorCode.INVALID_URL
+                            is VideoError.TooLong -> ErrorCode.INVALID_URL
+                            is VideoError.LiveStream -> ErrorCode.VIDEO_UNAVAILABLE
+                            is VideoError.PrivateVideo -> ErrorCode.PRIVATE_VIDEO
+                            is VideoError.AgeRestricted -> ErrorCode.AGE_RESTRICTED
+                            is VideoError.GeoRestricted -> ErrorCode.REGION_BLOCKED
+                            else -> ErrorCode.VIDEO_UNAVAILABLE
+                        },
+                        stage = PipelineStageName.DOWNLOAD,
+                        message = error.message,
+                        suggestion = error.suggestion,
+                        retryable = error.retryable
+                    )
+                ))
+                return PipelineStage.Error(
+                    stage = "Pre-flight",
+                    error = error.message,
+                    suggestion = error.suggestion
+                )
+            }
+            is VideoValidationResult.ValidWithWarning -> {
+                val warning = videoValidation.warning
+                emitLog(PipelineLogEvent.Warning(
+                    stage = null,
+                    message = warning.message,
+                    suggestion = warning.suggestion
+                ))
+            }
+            is VideoValidationResult.Valid -> {
+                emitLog(PipelineLogEvent.Debug(
+                    stage = null,
+                    message = "Video validation passed"
+                ))
+            }
+        }
+
+        // 2. Validate output path
+        val outputValidation = outputValidator.validateOutput(
+            directory = job.outputOptions.outputDirectory,
+            filename = OutputValidator.generateTranslatedFilename(
+                job.videoInfo.title,
+                job.targetLanguage.code
+            ),
+            fileExistsAction = FileExistsAction.RENAME, // Auto-rename for pipeline
+            estimatedSizeMB = DiskSpaceRequirements.estimateForTranslation(
+                job.videoInfo.duration / 1000,
+                includeDownload = true,
+                includeRender = job.outputOptions.subtitleType == SubtitleType.BURNED_IN
+            )
+        )
+        when (outputValidation) {
+            is OutputValidationResult.Invalid -> {
+                val error = outputValidation.error
+                emitLog(PipelineLogEvent.Error(
+                    stage = null,
+                    message = "Output validation failed: ${error.message}",
+                    error = PipelineError(
+                        code = when (error) {
+                            is OutputError.PermissionDenied -> ErrorCode.FILE_NOT_FOUND
+                            is OutputError.DiskFull -> ErrorCode.DISK_FULL
+                            else -> ErrorCode.FILE_NOT_FOUND
+                        },
+                        stage = PipelineStageName.RENDERING,
+                        message = error.message,
+                        suggestion = error.suggestion,
+                        retryable = false
+                    )
+                ))
+                return PipelineStage.Error(
+                    stage = "Pre-flight",
+                    error = error.message,
+                    suggestion = error.suggestion
+                )
+            }
+            is OutputValidationResult.RequiresAction -> {
+                val action = outputValidation.action
+                when (action) {
+                    is OutputAction.DirectoryMissing -> {
+                        // Try to create directory
+                        val createResult = outputValidator.ensureDirectoryExists(action.directory)
+                        if (createResult is OutputValidationResult.Invalid) {
+                            return PipelineStage.Error(
+                                stage = "Pre-flight",
+                                error = "Cannot create output directory: ${action.directory}",
+                                suggestion = "Check permissions or choose a different location"
+                            )
+                        }
+                    }
+                    is OutputAction.FileExists -> {
+                        // Logged as info - we'll use renamed file
+                        emitLog(PipelineLogEvent.Info(
+                            stage = null,
+                            message = "Output file exists, will use alternative name"
+                        ))
+                    }
+                }
+            }
+            is OutputValidationResult.ValidWithWarnings -> {
+                outputValidation.warnings.forEach { warning ->
+                    emitLog(PipelineLogEvent.Warning(
+                        stage = null,
+                        message = warning.message,
+                        suggestion = warning.suggestion
+                    ))
+                }
+            }
+            is OutputValidationResult.Valid -> {
+                emitLog(PipelineLogEvent.Debug(
+                    stage = null,
+                    message = "Output path validation passed"
+                ))
+            }
+        }
+
+        // 3. Validate translation (check if source = target)
+        val translationValidation = translationValidator.validateBeforeTranslation(
+            subtitles = Subtitles(emptyList(), job.sourceLanguage ?: Language.ENGLISH),
+            sourceLanguage = job.sourceLanguage,
+            targetLanguage = job.targetLanguage
+        )
+        when (translationValidation) {
+            is TranslationValidationResult.Skip -> {
+                emitLog(PipelineLogEvent.Warning(
+                    stage = PipelineStageName.TRANSLATION,
+                    message = translationValidation.reason.message,
+                    suggestion = "Translation will be skipped"
+                ))
+                // Don't block - just warn. The translation stage will handle skipping.
+            }
+            is TranslationValidationResult.ValidWithWarnings -> {
+                translationValidation.warnings.forEach { warning ->
+                    emitLog(PipelineLogEvent.Warning(
+                        stage = PipelineStageName.TRANSLATION,
+                        message = warning.message,
+                        suggestion = warning.suggestion
+                    ))
+                }
+            }
+            else -> {}
+        }
+
+        // 4. Check disk space before download
         diskSpaceChecker?.let { checker ->
             val videoDuration = job.videoInfo.duration
             val includeRender = job.outputOptions.subtitleType == SubtitleType.BURNED_IN
