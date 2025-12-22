@@ -3,6 +3,7 @@ package com.ericjesse.videotranslator.domain.pipeline
 import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.domain.service.*
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.resources.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -45,6 +46,9 @@ sealed class PipelineStage {
  * @property translatorService Service for translating subtitles.
  * @property subtitleRenderer Service for rendering subtitles to video.
  * @property configManager Configuration manager for settings.
+ * @property resourceManager Resource manager for memory tracking.
+ * @property tempFileManager Temp file manager for cleanup.
+ * @property diskSpaceChecker Disk space checker.
  * @property checkpointDir Directory for saving checkpoints.
  */
 class PipelineOrchestrator(
@@ -53,6 +57,9 @@ class PipelineOrchestrator(
     private val translatorService: TranslatorService,
     private val subtitleRenderer: SubtitleRenderer,
     private val configManager: ConfigManager? = null,
+    private val resourceManager: ResourceManager? = null,
+    private val tempFileManager: TempFileManager? = null,
+    private val diskSpaceChecker: DiskSpaceChecker? = null,
     private val checkpointDir: File = File(System.getProperty("user.home"), ".video-translator/checkpoints")
 ) {
     private val json = Json {
@@ -92,6 +99,25 @@ class PipelineOrchestrator(
         val jobId = UUID.randomUUID().toString()
         val startTime = System.currentTimeMillis()
 
+        // Start resource tracking
+        resourceManager?.startOperationTracking(jobId)
+        resourceManager?.startMonitoring(
+            onHighMemory = { state ->
+                emitLog(PipelineLogEvent.Warning(
+                    stage = null,
+                    message = "High memory usage: ${state.getSummary()}",
+                    suggestion = "Consider using a smaller Whisper model"
+                ))
+            },
+            onCriticalMemory = { state ->
+                emitLog(PipelineLogEvent.Warning(
+                    stage = null,
+                    message = "Critical memory usage: ${state.getSummary()}",
+                    suggestion = "Pipeline may be cancelled to prevent system instability"
+                ))
+            }
+        )
+
         // Pipeline state
         var downloadedVideoPath: String? = checkpoint?.downloadedVideoPath
         var subtitles: Subtitles? = checkpoint?.subtitles
@@ -113,6 +139,12 @@ class PipelineOrchestrator(
         ))
 
         try {
+            // Pre-flight resource checks
+            val resourceCheckResult = performPreflightResourceChecks(job)
+            if (resourceCheckResult != null) {
+                emit(resourceCheckResult)
+                return@flow
+            }
             // Stage 1: Download video (if not resuming past this stage)
             if (startStage.order <= PipelineStageName.DOWNLOAD.order) {
                 val downloadResult = executeDownloadStage(job) { emit(it) }
@@ -237,15 +269,117 @@ class PipelineOrchestrator(
                 stage = null,
                 message = "Pipeline cancelled by user"
             ))
-            cleanup()
+            cleanupResources(jobId)
             emit(PipelineStage.Cancelled)
             throw e
         } catch (e: Exception) {
             val error = ErrorMapper.mapException(e, determineCurrentStage(subtitles, translatedSubtitles))
             emitError(error)
-            cleanup()
+            cleanupResources(jobId)
             emit(createErrorStage(error))
+        } finally {
+            resourceManager?.stopMonitoring()
+            resourceManager?.stopOperationTracking(jobId)
         }
+    }
+
+    /**
+     * Performs pre-flight resource checks before starting the pipeline.
+     * Returns an error stage if resources are insufficient, null otherwise.
+     */
+    private suspend fun performPreflightResourceChecks(job: TranslationJob): PipelineStage.Error? {
+        // Check disk space before download
+        diskSpaceChecker?.let { checker ->
+            val videoDuration = job.videoInfo.duration
+            val includeRender = job.outputOptions.subtitleType == SubtitleType.BURNED_IN
+
+            val spaceCheck = checker.checkSpaceForTranslation(
+                videoDurationSeconds = videoDuration,
+                includeDownload = true,
+                includeRender = includeRender
+            )
+
+            when (spaceCheck) {
+                is DiskSpaceCheckResult.InsufficientSpace -> {
+                    emitLog(PipelineLogEvent.Error(
+                        stage = null,
+                        message = "Insufficient disk space",
+                        error = PipelineError(
+                            code = ErrorCode.DISK_FULL,
+                            stage = PipelineStageName.DOWNLOAD,
+                            message = spaceCheck.getMessage(),
+                            suggestion = spaceCheck.suggestions.firstOrNull(),
+                            retryable = false
+                        )
+                    ))
+                    return PipelineStage.Error(
+                        stage = "Pre-flight",
+                        error = spaceCheck.getMessage(),
+                        suggestion = spaceCheck.suggestions.firstOrNull()
+                    )
+                }
+                is DiskSpaceCheckResult.LowSpace -> {
+                    emitLog(PipelineLogEvent.Warning(
+                        stage = null,
+                        message = spaceCheck.warningMessage,
+                        suggestion = "Consider freeing up disk space before proceeding"
+                    ))
+                    // Proceed with warning - don't block
+                }
+                is DiskSpaceCheckResult.Sufficient -> {
+                    emitLog(PipelineLogEvent.Debug(
+                        stage = null,
+                        message = "Disk space check passed"
+                    ))
+                }
+            }
+        }
+
+        // Check memory for Whisper transcription
+        resourceManager?.let { rm ->
+            // Get configured Whisper model or default
+            val preferredModel = configManager?.getSettings()?.transcription?.whisperModel ?: "small"
+            val bestModel = rm.getBestAvailableWhisperModel(preferredModel)
+
+            if (bestModel != preferredModel) {
+                emitLog(PipelineLogEvent.Warning(
+                    stage = PipelineStageName.TRANSCRIPTION,
+                    message = "Degrading Whisper model from $preferredModel to $bestModel due to memory constraints",
+                    suggestion = "Close other applications to use higher quality model"
+                ))
+            }
+
+            val memoryCheck = rm.checkResourcesForWhisperModel(bestModel)
+            when (memoryCheck) {
+                is ResourceCheckResult.MemoryLimitExceeded -> {
+                    emitLog(PipelineLogEvent.Error(
+                        stage = PipelineStageName.TRANSCRIPTION,
+                        message = "Insufficient memory for transcription",
+                        error = PipelineError(
+                            code = ErrorCode.INSUFFICIENT_MEMORY,
+                            stage = PipelineStageName.TRANSCRIPTION,
+                            message = memoryCheck.getMessage(),
+                            suggestion = "Close other applications or use a smaller Whisper model",
+                            retryable = false
+                        )
+                    ))
+                    return PipelineStage.Error(
+                        stage = "Pre-flight",
+                        error = memoryCheck.getMessage(),
+                        suggestion = "Close other applications or use a smaller Whisper model"
+                    )
+                }
+                is ResourceCheckResult.LowMemory -> {
+                    emitLog(PipelineLogEvent.Warning(
+                        stage = PipelineStageName.TRANSCRIPTION,
+                        message = memoryCheck.getMessage()
+                    ))
+                }
+                else -> {}
+            }
+        }
+
+        return null
     }
 
     // ==================== Stage Execution Methods ====================
@@ -689,8 +823,30 @@ class PipelineOrchestrator(
 
     // ==================== Cleanup ====================
 
-    private fun trackTempFile(path: String) {
-        tempFiles.add(File(path))
+    private fun trackTempFile(path: String, jobId: String = "unknown") {
+        val file = File(path)
+        tempFiles.add(file)
+
+        // Also track with TempFileManager if available
+        tempFileManager?.trackFile(
+            path = file.toPath(),
+            operationId = jobId,
+            isDirectory = file.isDirectory,
+            description = "Pipeline temp file"
+        )
+    }
+
+    private suspend fun cleanupResources(jobId: String) {
+        logger.debug { "Cleaning up resources for job: $jobId" }
+
+        // Use TempFileManager if available for managed cleanup
+        tempFileManager?.let { tfm ->
+            val deleted = tfm.cleanupOperation(jobId, "pipeline cleanup")
+            logger.info { "TempFileManager cleaned up $deleted files for job $jobId" }
+        }
+
+        // Also clean up local tracking (for backward compatibility)
+        cleanup()
     }
 
     private fun cleanup() {

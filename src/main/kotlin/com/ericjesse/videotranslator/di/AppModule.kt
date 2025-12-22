@@ -5,6 +5,9 @@ import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.http.HttpClientFactory
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceChecker
+import com.ericjesse.videotranslator.infrastructure.resources.ResourceManager
+import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
 import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
 import com.ericjesse.videotranslator.domain.service.VideoDownloader
 import com.ericjesse.videotranslator.domain.service.TranscriberService
@@ -28,6 +31,13 @@ class AppModule {
     val updateManager: UpdateManager by lazy { UpdateManager(httpClient, platformPaths, configManager) }
     val connectivityChecker: ConnectivityChecker by lazy { ConnectivityChecker(httpClient) }
     val i18nManager: I18nManager by lazy { I18nManager(configManager) }
+
+    // Resource Management
+    val tempFileManager: TempFileManager by lazy { TempFileManager(platformPaths) }
+    val resourceManager: ResourceManager by lazy { ResourceManager(configManager) }
+    val diskSpaceChecker: DiskSpaceChecker by lazy {
+        DiskSpaceChecker(platformPaths, tempFileManager)
+    }
     
     // Domain Services
     val videoDownloader: VideoDownloader by lazy { 
@@ -49,12 +59,19 @@ class AppModule {
             videoDownloader = videoDownloader,
             transcriberService = transcriberService,
             translatorService = translatorService,
-            subtitleRenderer = subtitleRenderer
+            subtitleRenderer = subtitleRenderer,
+            configManager = configManager,
+            resourceManager = resourceManager,
+            tempFileManager = tempFileManager,
+            diskSpaceChecker = diskSpaceChecker
         )
     }
     
     fun close() {
         connectivityChecker.close()
+        resourceManager.close()
+        diskSpaceChecker.close()
+        tempFileManager.close()
         httpClient.close()
     }
 }
