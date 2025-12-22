@@ -6,6 +6,10 @@ import androidx.compose.runtime.setValue
 import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.network.ConnectivityCheckResult
+import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
+import com.ericjesse.videotranslator.infrastructure.network.ConnectivityState
+import com.ericjesse.videotranslator.infrastructure.network.KnownServices
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +57,9 @@ private val VIDEO_ID_REGEX = Regex(
  * @property isFetchingVideoInfo Whether video info is being fetched.
  * @property videoInfo Fetched video information, or null if not yet fetched.
  * @property videoInfoError Error message from video info fetch, or null.
+ * @property isCheckingConnectivity Whether connectivity is being checked.
+ * @property connectivityCheckResult Result of the last connectivity check.
+ * @property showConnectivityDialog Whether to show the connectivity dialog.
  */
 data class MainScreenState(
     val youtubeUrl: String = "",
@@ -66,7 +73,10 @@ data class MainScreenState(
     val isValidating: Boolean = false,
     val isFetchingVideoInfo: Boolean = false,
     val videoInfo: VideoInfo? = null,
-    val videoInfoError: String? = null
+    val videoInfoError: String? = null,
+    val isCheckingConnectivity: Boolean = false,
+    val connectivityCheckResult: ConnectivityCheckResult? = null,
+    val showConnectivityDialog: Boolean = false
 ) {
     /**
      * Whether the form is valid and ready for translation.
@@ -81,7 +91,7 @@ data class MainScreenState(
      * Whether a translation job can be started.
      */
     val canTranslate: Boolean
-        get() = isFormValid && !isFetchingVideoInfo
+        get() = isFormValid && !isFetchingVideoInfo && !isCheckingConnectivity
 }
 
 /**
@@ -101,15 +111,23 @@ class MainViewModel(
     private val i18n = appModule.i18nManager
 
     /**
+     * Connectivity checker for network status.
+     */
+    val connectivityChecker: ConnectivityChecker = appModule.connectivityChecker
+
+    /**
      * Current screen state.
      */
     var state by mutableStateOf(MainScreenState())
         private set
 
     private var videoInfoJob: Job? = null
+    private var connectivityJob: Job? = null
 
     init {
         loadDefaults()
+        // Start connectivity monitoring
+        connectivityChecker.startMonitoring()
     }
 
     /**
@@ -321,13 +339,23 @@ class MainViewModel(
 
     /**
      * Called when the translate button is clicked.
-     * Validates the form and creates a TranslationJob if valid.
+     * Checks connectivity first, then validates the form and creates a TranslationJob if valid.
      *
-     * @return TranslationJob if valid, null otherwise.
+     * @return TranslationJob if valid and connected, null otherwise.
      */
     fun onTranslateClicked(): TranslationJob? {
         if (!state.isFormValid) {
             logger.warn { "Form is not valid for translation" }
+            return null
+        }
+
+        // Check connectivity synchronously via the current status
+        val currentConnectivity = connectivityChecker.currentStatus
+        if (!currentConnectivity.internetAvailable) {
+            state = state.copy(
+                connectivityCheckResult = ConnectivityCheckResult.NoInternet,
+                showConnectivityDialog = true
+            )
             return null
         }
 
@@ -360,6 +388,110 @@ class MainViewModel(
 
         logger.info { "Created translation job for ${videoInfo.title}" }
         return job
+    }
+
+    /**
+     * Checks connectivity before starting translation.
+     * Call this before onTranslateClicked for async connectivity verification.
+     *
+     * @param onReady Callback when connectivity is ready.
+     */
+    fun checkConnectivityAndTranslate(onReady: (TranslationJob) -> Unit) {
+        if (!state.isFormValid) {
+            logger.warn { "Form is not valid for translation" }
+            return
+        }
+
+        connectivityJob?.cancel()
+        connectivityJob = scope.launch {
+            state = state.copy(isCheckingConnectivity = true)
+
+            // Get the translation service to check
+            val settings = configManager.getSettings()
+            val translationService = when (settings.translation.defaultService) {
+                "deepl" -> KnownServices.DEEPL
+                "openai" -> KnownServices.OPENAI
+                else -> KnownServices.LIBRE_TRANSLATE
+            }
+
+            val result = connectivityChecker.checkBeforeTranslation(translationService)
+
+            state = state.copy(
+                isCheckingConnectivity = false,
+                connectivityCheckResult = result
+            )
+
+            when (result) {
+                is ConnectivityCheckResult.Ready -> {
+                    // Connectivity is good, proceed with translation
+                    onTranslateClicked()?.let(onReady)
+                }
+                is ConnectivityCheckResult.SlowConnection -> {
+                    // Warn but allow proceeding
+                    state = state.copy(showConnectivityDialog = true)
+                }
+                else -> {
+                    // Show dialog for errors
+                    state = state.copy(showConnectivityDialog = true)
+                }
+            }
+        }
+    }
+
+    /**
+     * Dismisses the connectivity dialog.
+     */
+    fun dismissConnectivityDialog() {
+        state = state.copy(showConnectivityDialog = false)
+    }
+
+    /**
+     * Retries connectivity check.
+     */
+    fun retryConnectivityCheck(onReady: (TranslationJob) -> Unit) {
+        dismissConnectivityDialog()
+        checkConnectivityAndTranslate(onReady)
+    }
+
+    /**
+     * Proceeds with translation despite connectivity warning.
+     */
+    fun proceedAnywayWithTranslation(): TranslationJob? {
+        dismissConnectivityDialog()
+        return createTranslationJob()
+    }
+
+    /**
+     * Creates a translation job without connectivity checks.
+     */
+    private fun createTranslationJob(): TranslationJob? {
+        if (!state.isFormValid) return null
+
+        val videoInfo = state.videoInfo ?: run {
+            val videoId = extractVideoId(state.youtubeUrl) ?: return null
+            VideoInfo(
+                url = state.youtubeUrl,
+                id = videoId,
+                title = "YouTube Video",
+                duration = 0L
+            )
+        }
+
+        val outputOptions = OutputOptions(
+            outputDirectory = state.outputDirectory,
+            subtitleType = state.subtitleType,
+            exportSrt = state.exportSrt,
+            burnedInStyle = if (state.subtitleType == SubtitleType.BURNED_IN) {
+                state.burnedInStyle
+            } else null
+        )
+
+        return TranslationJob(
+            videoInfo = videoInfo,
+            sourceLanguage = state.sourceLanguage,
+            targetLanguage = state.targetLanguage,
+            outputOptions = outputOptions
+        )
     }
 
     /**
@@ -424,5 +556,6 @@ class MainViewModel(
      */
     fun dispose() {
         videoInfoJob?.cancel()
+        connectivityJob?.cancel()
     }
 }

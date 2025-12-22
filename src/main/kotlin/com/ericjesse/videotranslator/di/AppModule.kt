@@ -3,6 +3,7 @@ package com.ericjesse.videotranslator.di
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.http.HttpClientFactory
+import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
 import com.ericjesse.videotranslator.domain.service.VideoDownloader
@@ -25,6 +26,7 @@ class AppModule {
     val httpClient: HttpClient by lazy { HttpClientFactory.create() }
     val processExecutor: ProcessExecutor by lazy { ProcessExecutor() }
     val updateManager: UpdateManager by lazy { UpdateManager(httpClient, platformPaths, configManager) }
+    val connectivityChecker: ConnectivityChecker by lazy { ConnectivityChecker(httpClient) }
     val i18nManager: I18nManager by lazy { I18nManager(configManager) }
     
     // Domain Services
@@ -52,6 +54,7 @@ class AppModule {
     }
     
     fun close() {
+        connectivityChecker.close()
         httpClient.close()
     }
 }
