@@ -31,6 +31,7 @@ import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.i18n.Locale
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.GeneralTabContent
+import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranslationTabContent
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -518,87 +519,6 @@ private fun SettingsTabContent(
 
 // ========== Tab Content Placeholders ==========
 // These will be replaced with proper implementations in separate files
-
-@Composable
-private fun TranslationTabContent(
-    appModule: AppModule,
-    settings: AppSettings,
-    serviceConfig: TranslationServiceConfig,
-    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
-    onUpdateServiceConfig: ((TranslationServiceConfig) -> TranslationServiceConfig) -> Unit
-) {
-    val i18n = appModule.i18nManager
-
-    Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        // Active service
-        SettingsSection(title = i18n["settings.translation.activeService"]) {
-            SettingsDropdown(
-                label = i18n["settings.translation.activeService"],
-                value = settings.translation.defaultService,
-                options = listOf(
-                    "libretranslate" to "LibreTranslate (Free)",
-                    "deepl" to "DeepL",
-                    "openai" to "OpenAI"
-                ),
-                onValueChange = { service ->
-                    onUpdateSettings {
-                        it.copy(translation = it.translation.copy(defaultService = service))
-                    }
-                }
-            )
-        }
-
-        // LibreTranslate settings
-        if (settings.translation.defaultService == "libretranslate") {
-            SettingsCard {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text(
-                        text = i18n["settings.translation.libreTranslate"],
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Medium
-                    )
-
-                    SettingsTextField(
-                        label = i18n["settings.translation.instanceUrl"],
-                        value = serviceConfig.libreTranslateUrl ?: "",
-                        onValueChange = { url ->
-                            onUpdateServiceConfig { it.copy(libreTranslateUrl = url) }
-                        }
-                    )
-
-                    AppButton(
-                        text = i18n["settings.translation.testConnection"],
-                        onClick = { /* TODO: Test connection */ },
-                        style = ButtonStyle.Secondary,
-                        size = ButtonSize.Small
-                    )
-                }
-            }
-        }
-
-        // DeepL API Key
-        SettingsSection(title = i18n["settings.translation.deeplApiKey"]) {
-            SettingsPasswordField(
-                label = i18n["settings.translation.deeplApiKey"],
-                value = serviceConfig.deeplApiKey ?: "",
-                onValueChange = { key ->
-                    onUpdateServiceConfig { it.copy(deeplApiKey = key.ifEmpty { null }) }
-                }
-            )
-        }
-
-        // OpenAI API Key
-        SettingsSection(title = i18n["settings.translation.openaiApiKey"]) {
-            SettingsPasswordField(
-                label = i18n["settings.translation.openaiApiKey"],
-                value = serviceConfig.openaiApiKey ?: "",
-                onValueChange = { key ->
-                    onUpdateServiceConfig { it.copy(openaiApiKey = key.ifEmpty { null }) }
-                }
-            )
-        }
-    }
-}
 
 @Composable
 private fun TranscriptionTabContent(
