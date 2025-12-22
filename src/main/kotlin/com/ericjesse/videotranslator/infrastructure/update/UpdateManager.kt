@@ -14,9 +14,11 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -117,8 +119,8 @@ class UpdateManager(
     /**
      * Downloads and installs an application update.
      */
-    fun downloadAppUpdate(updateInfo: AppUpdateInfo): Flow<DownloadProgress> = flow {
-        emit(DownloadProgress(0f, "Starting download..."))
+    fun downloadAppUpdate(updateInfo: AppUpdateInfo): Flow<DownloadProgress> = channelFlow {
+        send(DownloadProgress(0f, "Starting download..."))
 
         val tempFile = File(platformPaths.cacheDir, "update-${updateInfo.newVersion}.tmp")
         val targetFile = File(platformPaths.cacheDir, "update-${updateInfo.newVersion}")
@@ -129,10 +131,10 @@ class UpdateManager(
             targetFile = targetFile,
             expectedChecksum = null // App updates may not have checksums
         ) { progress, message ->
-            emit(DownloadProgress(progress * 0.9f, message))
+            send(DownloadProgress(progress * 0.9f, message))
         }
 
-        emit(DownloadProgress(1f, "Download complete. Ready to install."))
+        send(DownloadProgress(1f, "Download complete. Ready to install."))
 
         // The actual installation would be platform-specific
         // and typically requires restarting the app
@@ -143,15 +145,15 @@ class UpdateManager(
     /**
      * Downloads and installs yt-dlp.
      */
-    fun installYtDlp(): Flow<DownloadProgress> = flow {
-        emit(DownloadProgress(0f, "Fetching latest yt-dlp release..."))
+    fun installYtDlp(): Flow<DownloadProgress> = channelFlow {
+        send(DownloadProgress(0f, "Fetching latest yt-dlp release..."))
 
         val release = getLatestRelease(YTDLP_REPO)
         val downloadUrl = getYtDlpDownloadUrl(release)
         val tempFile = File(platformPaths.cacheDir, "yt-dlp.tmp")
         val targetFile = File(platformPaths.getBinaryPath("yt-dlp"))
 
-        emit(DownloadProgress(0.05f, "Downloading yt-dlp ${release.tagName}..."))
+        send(DownloadProgress(0.05f, "Downloading yt-dlp ${release.tagName}..."))
 
         downloadFileWithRetry(
             url = downloadUrl,
@@ -159,7 +161,7 @@ class UpdateManager(
             targetFile = targetFile,
             expectedChecksum = null // yt-dlp provides checksums in separate files
         ) { progress, message ->
-            emit(DownloadProgress(0.05f + progress * 0.9f, message))
+            send(DownloadProgress(0.05f + progress * 0.9f, message))
         }
 
         // Make executable on Unix
@@ -172,15 +174,15 @@ class UpdateManager(
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(ytDlp = release.tagName))
 
-        emit(DownloadProgress(1f, "yt-dlp ${release.tagName} installed"))
+        send(DownloadProgress(1f, "yt-dlp ${release.tagName} installed"))
         logger.info { "yt-dlp ${release.tagName} installed successfully" }
     }.flowOn(Dispatchers.IO)
 
     /**
      * Downloads and installs FFmpeg.
      */
-    fun installFfmpeg(): Flow<DownloadProgress> = flow {
-        emit(DownloadProgress(0f, "Fetching FFmpeg..."))
+    fun installFfmpeg(): Flow<DownloadProgress> = channelFlow {
+        send(DownloadProgress(0f, "Fetching FFmpeg..."))
 
         val downloadUrl = getFfmpegDownloadUrl()
         val archiveExtension = if (platformPaths.operatingSystem == OperatingSystem.LINUX) ".tar.xz" else ".zip"
@@ -188,7 +190,7 @@ class UpdateManager(
         val archiveFile = File(platformPaths.cacheDir, "ffmpeg$archiveExtension")
         val extractDir = File(platformPaths.cacheDir, "ffmpeg-extract")
 
-        emit(DownloadProgress(0.05f, "Downloading FFmpeg..."))
+        send(DownloadProgress(0.05f, "Downloading FFmpeg..."))
 
         downloadFileWithRetry(
             url = downloadUrl,
@@ -196,10 +198,10 @@ class UpdateManager(
             targetFile = archiveFile,
             expectedChecksum = null
         ) { progress, message ->
-            emit(DownloadProgress(0.05f + progress * 0.65f, message))
+            send(DownloadProgress(0.05f + progress * 0.65f, message))
         }
 
-        emit(DownloadProgress(0.7f, "Extracting FFmpeg..."))
+        send(DownloadProgress(0.7f, "Extracting FFmpeg..."))
 
         // Clean up existing extraction directory
         if (extractDir.exists()) {
@@ -215,11 +217,11 @@ class UpdateManager(
         ) { progress ->
             val extractProgress = progress.percentage
             if (extractProgress >= 0) {
-                emit(DownloadProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}"))
+                send(DownloadProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}"))
             }
         }
 
-        emit(DownloadProgress(0.9f, "Installing FFmpeg binaries..."))
+        send(DownloadProgress(0.9f, "Installing FFmpeg binaries..."))
 
         // Find and install the binaries
         val (ffmpegPath, ffprobePath) = archiveExtractor.findFfmpegBinaries(extractionResult.extractedPath)
@@ -257,19 +259,19 @@ class UpdateManager(
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(ffmpeg = version))
 
-        emit(DownloadProgress(1f, "FFmpeg $version installed"))
+        send(DownloadProgress(1f, "FFmpeg $version installed"))
         logger.info { "FFmpeg $version installed successfully" }
     }.flowOn(Dispatchers.IO)
 
     /**
      * Downloads a Whisper model with checksum verification.
      */
-    fun installWhisperModel(modelName: String): Flow<DownloadProgress> = flow {
+    fun installWhisperModel(modelName: String): Flow<DownloadProgress> = channelFlow {
         val url = WHISPER_MODELS[modelName]
             ?: throw IllegalArgumentException("Unknown model: $modelName")
         val expectedChecksum = WHISPER_MODEL_CHECKSUMS[modelName]
 
-        emit(DownloadProgress(0f, "Preparing to download Whisper $modelName model..."))
+        send(DownloadProgress(0f, "Preparing to download Whisper $modelName model..."))
 
         val modelDir = File(platformPaths.modelsDir, "whisper").apply { mkdirs() }
         val tempFile = File(platformPaths.cacheDir, "ggml-$modelName.bin.tmp")
@@ -281,22 +283,22 @@ class UpdateManager(
             targetFile = targetFile,
             expectedChecksum = expectedChecksum
         ) { progress, message ->
-            emit(DownloadProgress(progress * 0.95f, message))
+            send(DownloadProgress(progress * 0.95f, message))
         }
 
         // Update version info
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(whisperModel = modelName))
 
-        emit(DownloadProgress(1f, "Whisper $modelName model installed"))
+        send(DownloadProgress(1f, "Whisper $modelName model installed"))
         logger.info { "Whisper model '$modelName' installed successfully" }
     }.flowOn(Dispatchers.IO)
 
     /**
      * Downloads and installs whisper.cpp binary.
      */
-    fun installWhisperCpp(): Flow<DownloadProgress> = flow {
-        emit(DownloadProgress(0f, "Fetching whisper.cpp release..."))
+    fun installWhisperCpp(): Flow<DownloadProgress> = channelFlow {
+        send(DownloadProgress(0f, "Fetching whisper.cpp release..."))
 
         val release = getLatestRelease(WHISPER_REPO)
         val downloadUrl = getWhisperCppDownloadUrl(release)
@@ -304,7 +306,7 @@ class UpdateManager(
         val archiveFile = File(platformPaths.cacheDir, "whisper.zip")
         val extractDir = File(platformPaths.cacheDir, "whisper-extract")
 
-        emit(DownloadProgress(0.05f, "Downloading whisper.cpp ${release.tagName}..."))
+        send(DownloadProgress(0.05f, "Downloading whisper.cpp ${release.tagName}..."))
 
         downloadFileWithRetry(
             url = downloadUrl,
@@ -312,10 +314,10 @@ class UpdateManager(
             targetFile = archiveFile,
             expectedChecksum = null
         ) { progress, message ->
-            emit(DownloadProgress(0.05f + progress * 0.65f, message))
+            send(DownloadProgress(0.05f + progress * 0.65f, message))
         }
 
-        emit(DownloadProgress(0.7f, "Extracting whisper.cpp..."))
+        send(DownloadProgress(0.7f, "Extracting whisper.cpp..."))
 
         // Clean up existing extraction directory
         if (extractDir.exists()) {
@@ -331,11 +333,11 @@ class UpdateManager(
         ) { progress ->
             val extractProgress = progress.percentage
             if (extractProgress >= 0) {
-                emit(DownloadProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}"))
+                send(DownloadProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}"))
             }
         }
 
-        emit(DownloadProgress(0.9f, "Installing whisper.cpp..."))
+        send(DownloadProgress(0.9f, "Installing whisper.cpp..."))
 
         // Find the whisper binary (might be named 'main', 'whisper', 'whisper-cpp', etc.)
         val whisperBinaryNames = listOf("main", "whisper", "whisper-cpp", "whisper.cpp")
@@ -377,7 +379,7 @@ class UpdateManager(
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(whisperCpp = release.tagName))
 
-        emit(DownloadProgress(1f, "whisper.cpp ${release.tagName} installed"))
+        send(DownloadProgress(1f, "whisper.cpp ${release.tagName} installed"))
         logger.info { "whisper.cpp ${release.tagName} installed successfully" }
     }.flowOn(Dispatchers.IO)
 
@@ -693,10 +695,10 @@ class UpdateManager(
  */
 @Serializable
 data class GitHubRelease(
-    val tagName: String,
+    @SerialName("tag_name") val tagName: String,
     val name: String? = null,
     val body: String? = null,
-    val publishedAt: String? = null,
+    @SerialName("published_at") val publishedAt: String? = null,
     val assets: List<GitHubAsset> = emptyList()
 )
 
@@ -710,7 +712,7 @@ data class GitHubRelease(
 @Serializable
 data class GitHubAsset(
     val name: String,
-    val browserDownloadUrl: String,
+    @SerialName("browser_download_url") val browserDownloadUrl: String,
     val size: Long = 0
 )
 

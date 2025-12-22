@@ -39,10 +39,22 @@ class ConfigManager(
     private var cachedServiceConfig: TranslationServiceConfig? = null
     
     /**
-     * Checks if this is the first run (no settings file exists).
+     * Checks if setup wizard needs to be shown.
+     * Returns true if settings file doesn't exist or if setup was not completed.
      */
     fun isFirstRun(): Boolean {
-        return !File(platformPaths.settingsFile).exists()
+        val file = File(platformPaths.settingsFile)
+        if (!file.exists()) {
+            return true
+        }
+        // Settings exist but setup may have been interrupted
+        return try {
+            val settings = json.decodeFromString<AppSettings>(file.readText())
+            !settings.setupProgress.completed
+        } catch (e: Exception) {
+            logger.warn { "Failed to check setup progress, treating as first run: ${e.message}" }
+            true
+        }
     }
     
     /**

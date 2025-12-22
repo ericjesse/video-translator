@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <!-- Platform-specific log directory detection -->
-    <define name="LOG_DIR" class="ch.qos.logback.core.property.CanonicalHostNamePropertyDefiner" />
+    <!-- Import system property os.name into logback context for conditional evaluation -->
+    <property name="OS_NAME" value="${os.name}" />
 
-    <if condition='property("os.name").toLowerCase().contains("win")'>
+    <!-- Platform-specific log directory detection -->
+    <if condition='property("OS_NAME").contains("Windows")'>
         <then>
             <property name="LOG_PATH" value="${LOCALAPPDATA:-${user.home}/AppData/Local}/VideoTranslator/logs" />
         </then>
-        <elseif condition='property("os.name").toLowerCase().contains("mac")'>
+        <elseif condition='property("OS_NAME").contains("Mac")'>
             <then>
                 <property name="LOG_PATH" value="${user.home}/Library/Logs/VideoTranslator" />
             </then>

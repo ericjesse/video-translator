@@ -131,21 +131,13 @@ fun SetupWizard(
     val i18n = appModule.i18nManager
     val configManager = appModule.configManager
 
-    // Load saved progress
-    val savedProgress = remember { configManager.getSettings().setupProgress }
-
+    // Always start from scratch - don't resume incomplete setups
     val state = remember {
         SetupWizardState(
-            initialStep = if (savedProgress.dependenciesDownloaded) {
-                SetupStep.fromIndex(savedProgress.currentStep.coerceAtLeast(SetupStep.TRANSLATION_SERVICE.index))
-            } else {
-                SetupStep.fromIndex(savedProgress.currentStep)
-            },
-            initialWhisperModel = savedProgress.selectedWhisperModel,
-            initialTranslationService = savedProgress.selectedTranslationService
-        ).apply {
-            dependenciesDownloaded = savedProgress.dependenciesDownloaded
-        }
+            initialStep = SetupStep.WELCOME,
+            initialWhisperModel = "base",
+            initialTranslationService = "libretranslate"
+        )
     }
 
     // Save progress when step changes
