@@ -31,6 +31,7 @@ import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.i18n.Locale
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.GeneralTabContent
+import com.ericjesse.videotranslator.ui.screens.settings.tabs.SubtitlesTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranscriptionTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranslationTabContent
 import com.ericjesse.videotranslator.ui.theme.AppColors
@@ -520,73 +521,6 @@ private fun SettingsTabContent(
 
 // ========== Tab Content Placeholders ==========
 // These will be replaced with proper implementations in separate files
-
-@Composable
-private fun SubtitlesTabContent(
-    appModule: AppModule,
-    settings: AppSettings,
-    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit
-) {
-    val i18n = appModule.i18nManager
-
-    Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        // Default output mode
-        SettingsSection(title = i18n["settings.subtitles.defaultMode"]) {
-            SettingsDropdown(
-                label = i18n["settings.subtitles.defaultMode"],
-                value = settings.subtitle.defaultOutputMode,
-                options = listOf(
-                    "soft" to i18n["main.subtitleType.soft"],
-                    "hard" to i18n["main.subtitleType.burnedIn"]
-                ),
-                onValueChange = { mode ->
-                    onUpdateSettings {
-                        it.copy(subtitle = it.subtitle.copy(defaultOutputMode = mode))
-                    }
-                }
-            )
-        }
-
-        // Always export SRT
-        SettingsCheckbox(
-            label = i18n["settings.subtitles.alwaysExportSrt"],
-            description = null,
-            checked = settings.subtitle.alwaysExportSrt,
-            onCheckedChange = { checked ->
-                onUpdateSettings {
-                    it.copy(subtitle = it.subtitle.copy(alwaysExportSrt = checked))
-                }
-            }
-        )
-
-        // Burned-in style settings
-        SettingsCard {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(
-                    text = i18n["settings.subtitles.burnedInStyle"],
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium
-                )
-
-                // Font size
-                SettingsDropdown(
-                    label = i18n["settings.subtitles.fontSize"],
-                    value = settings.subtitle.burnedIn.fontSize.toString(),
-                    options = listOf("18", "20", "22", "24", "28", "32").map { it to it },
-                    onValueChange = { size ->
-                        onUpdateSettings {
-                            it.copy(
-                                subtitle = it.subtitle.copy(
-                                    burnedIn = it.subtitle.burnedIn.copy(fontSize = size.toIntOrNull() ?: 24)
-                                )
-                            )
-                        }
-                    }
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun UpdatesTabContent(
