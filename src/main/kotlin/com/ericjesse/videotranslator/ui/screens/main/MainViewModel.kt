@@ -171,13 +171,14 @@ class MainViewModel(
 
         val trimmedUrl = url.trim()
 
-        // Clear previous state
+        // Clear previous state (including isFetchingVideoInfo since job was cancelled)
         state = state.copy(
             youtubeUrl = trimmedUrl,
             urlError = null,
             videoInfo = null,
             videoInfoError = null,
-            isValidating = false
+            isValidating = false,
+            isFetchingVideoInfo = false
         )
 
         // Validate if non-empty

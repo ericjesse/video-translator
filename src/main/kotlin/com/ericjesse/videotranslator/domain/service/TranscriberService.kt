@@ -9,7 +9,7 @@ import com.ericjesse.videotranslator.infrastructure.process.ProcessConfig
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.json.Json
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
@@ -89,20 +89,20 @@ class TranscriberService(
         inputPath: String,
         options: WhisperOptions = WhisperOptions(),
         cancellationToken: CancellationToken? = null
-    ): Flow<StageProgress> = flow {
+    ): Flow<StageProgress> = channelFlow {
         val startTime = System.currentTimeMillis()
 
         try {
-            emit(StageProgress(0f, "Preparing audio..."))
+            send(StageProgress(0f, "Preparing audio..."))
 
             // Step 1: Extract/convert audio to WAV format
             val audioInfo = prepareAudio(inputPath, cancellationToken)
-            emit(StageProgress(EXTRACTION_PROGRESS_WEIGHT, "Audio prepared, analyzing..."))
+            send(StageProgress(EXTRACTION_PROGRESS_WEIGHT, "Audio prepared, analyzing..."))
             logger.info { "Audio prepared: ${audioInfo.duration}ms duration" }
 
             // Step 2: Check if segmentation is needed for long files
             val segments = if (audioInfo.duration > DEFAULT_MAX_SEGMENT_DURATION_MS) {
-                emit(StageProgress(EXTRACTION_PROGRESS_WEIGHT, "Long audio detected, segmenting..."))
+                send(StageProgress(EXTRACTION_PROGRESS_WEIGHT, "Long audio detected, segmenting..."))
                 segmentAudio(audioInfo, SegmentationConfig(), cancellationToken)
             } else {
                 listOf(
@@ -125,7 +125,7 @@ class TranscriberService(
                 val segmentStartProgress = EXTRACTION_PROGRESS_WEIGHT +
                         (index.toFloat() / segments.size) * TRANSCRIPTION_PROGRESS_WEIGHT
 
-                emit(
+                send(
                     StageProgress(
                         segmentStartProgress,
                         if (segments.size > 1) "Transcribing segment ${index + 1}/${segments.size}..."
@@ -141,7 +141,7 @@ class TranscriberService(
                     progressWeight = TRANSCRIPTION_PROGRESS_WEIGHT / segments.size,
                     cancellationToken = cancellationToken
                 ) { progress ->
-                    emit(progress)
+                    send(progress)
                 }
 
                 // Adjust timestamps for segmented audio
@@ -180,10 +180,10 @@ class TranscriberService(
             )
 
             // Step 5: Cleanup
-            emit(StageProgress(EXTRACTION_PROGRESS_WEIGHT + TRANSCRIPTION_PROGRESS_WEIGHT, "Cleaning up..."))
+            send(StageProgress(EXTRACTION_PROGRESS_WEIGHT + TRANSCRIPTION_PROGRESS_WEIGHT, "Cleaning up..."))
             cleanupTempFiles()
 
-            emit(StageProgress(1f, "Transcription complete"))
+            send(StageProgress(1f, "Transcription complete"))
             logger.info { "Transcription completed in ${processingTime}ms" }
 
         } catch (e: Exception) {

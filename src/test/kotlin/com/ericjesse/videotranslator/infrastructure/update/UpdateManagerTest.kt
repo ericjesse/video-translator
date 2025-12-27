@@ -138,17 +138,17 @@ class UpdateManagerTest {
 
     @Test
     fun `GitHubRelease deserializes correctly`() {
-        // Use camelCase to match Kotlin data class property names
+        // Use snake_case to match GitHub API format (via @SerialName annotations)
         val jsonStr = """
             {
-                "tagName": "v1.2.3",
+                "tag_name": "v1.2.3",
                 "name": "Release 1.2.3",
                 "body": "Release notes here",
-                "publishedAt": "2024-01-01T00:00:00Z",
+                "published_at": "2024-01-01T00:00:00Z",
                 "assets": [
                     {
                         "name": "app.zip",
-                        "browserDownloadUrl": "https://example.com/app.zip",
+                        "browser_download_url": "https://example.com/app.zip",
                         "size": 12345
                     }
                 ]
@@ -171,7 +171,7 @@ class UpdateManagerTest {
     fun `GitHubRelease handles missing optional fields`() {
         val jsonStr = """
             {
-                "tagName": "v1.0.0",
+                "tag_name": "v1.0.0",
                 "assets": []
             }
         """.trimIndent()
@@ -190,7 +190,7 @@ class UpdateManagerTest {
         val jsonStr = """
             {
                 "name": "binary.zip",
-                "browserDownloadUrl": "https://example.com/binary.zip",
+                "browser_download_url": "https://example.com/binary.zip",
                 "size": 999
             }
         """.trimIndent()

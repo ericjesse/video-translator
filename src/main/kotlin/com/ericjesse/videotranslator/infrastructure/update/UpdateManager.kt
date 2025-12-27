@@ -296,9 +296,398 @@ class UpdateManager(
 
     /**
      * Downloads and installs whisper.cpp binary.
+     * - Windows: Downloads pre-built binary from GitHub releases
+     * - macOS: Uses Homebrew (no pre-built binaries available)
+     * - Linux: Uses apt/dnf package manager or builds from source
      */
     fun installWhisperCpp(): Flow<DownloadProgress> = channelFlow {
-        send(DownloadProgress(0f, "Fetching whisper.cpp release..."))
+        when (platformPaths.operatingSystem) {
+            OperatingSystem.MACOS -> {
+                // macOS: Use Homebrew since whisper.cpp doesn't provide pre-built macOS binaries
+                installWhisperCppViaBrew { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+            OperatingSystem.LINUX -> {
+                // Linux: Try package manager, fall back to building from source
+                installWhisperCppOnLinux { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+            OperatingSystem.WINDOWS -> {
+                // Windows: Download from GitHub releases
+                installWhisperCppFromGitHub { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Installs whisper.cpp via Homebrew (macOS only).
+     */
+    private suspend fun installWhisperCppViaBrew(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Checking for Homebrew...")
+
+        // Check if brew is available
+        val brewPath = findBrewPath()
+        if (brewPath == null) {
+            throw UpdateException(
+                "Homebrew is required to install whisper.cpp on macOS. " +
+                "Please install Homebrew from https://brew.sh and try again."
+            )
+        }
+
+        logger.info { "Found Homebrew at: $brewPath" }
+        onProgress(0.1f, "Installing whisper.cpp via Homebrew...")
+
+        // Install whisper-cpp via brew
+        val process = ProcessBuilder(brewPath, "install", "whisper-cpp")
+            .redirectErrorStream(true)
+            .start()
+
+        // Read output for progress updates
+        val reader = process.inputStream.bufferedReader()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            logger.debug { "[brew] $line" }
+            // Update progress based on output
+            when {
+                line!!.contains("Downloading") -> onProgress(0.3f, "Downloading whisper-cpp...")
+                line!!.contains("Pouring") -> onProgress(0.6f, "Installing whisper-cpp...")
+                line!!.contains("Caveats") -> onProgress(0.8f, "Finalizing installation...")
+            }
+        }
+
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw UpdateException("Failed to install whisper-cpp via Homebrew (exit code: $exitCode)")
+        }
+
+        onProgress(0.9f, "Creating symlink...")
+
+        // Find the installed whisper binary
+        val whisperBrewPath = findBrewWhisperPath(brewPath)
+        if (whisperBrewPath == null) {
+            throw UpdateException("whisper-cpp was installed but binary not found. Try running: brew link whisper-cpp")
+        }
+
+        // Create symlink or copy to our bin directory
+        val whisperTarget = File(platformPaths.getBinaryPath("whisper"))
+        whisperTarget.parentFile?.mkdirs()
+
+        // Copy the binary to our location
+        Files.copy(
+            Path.of(whisperBrewPath),
+            whisperTarget.toPath(),
+            StandardCopyOption.REPLACE_EXISTING
+        )
+        whisperTarget.setExecutable(true)
+
+        logger.info { "Installed whisper to ${whisperTarget.absolutePath}" }
+
+        // Get version
+        val version = getWhisperVersion(whisperTarget) ?: "unknown"
+        val versions = configManager.getInstalledVersions()
+        configManager.saveInstalledVersions(versions.copy(whisperCpp = version))
+
+        onProgress(1f, "whisper.cpp $version installed via Homebrew")
+        logger.info { "whisper.cpp $version installed successfully via Homebrew" }
+    }
+
+    /**
+     * Finds the Homebrew executable path.
+     */
+    private fun findBrewPath(): String? {
+        // Check common Homebrew locations
+        val brewPaths = listOf(
+            "/opt/homebrew/bin/brew",      // Apple Silicon
+            "/usr/local/bin/brew",          // Intel Mac
+            "/home/linuxbrew/.linuxbrew/bin/brew"  // Linux
+        )
+
+        for (path in brewPaths) {
+            if (File(path).exists()) {
+                return path
+            }
+        }
+
+        // Try to find in PATH
+        return try {
+            val process = ProcessBuilder("which", "brew")
+                .redirectErrorStream(true)
+                .start()
+            val result = process.inputStream.bufferedReader().readLine()
+            process.waitFor()
+            if (process.exitValue() == 0 && result?.isNotBlank() == true) result else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Finds the whisper binary installed by Homebrew.
+     */
+    private fun findBrewWhisperPath(brewPath: String): String? {
+        // Get the Homebrew prefix
+        val prefixProcess = ProcessBuilder(brewPath, "--prefix", "whisper-cpp")
+            .redirectErrorStream(true)
+            .start()
+        val prefix = prefixProcess.inputStream.bufferedReader().readLine()
+        prefixProcess.waitFor()
+
+        if (prefix.isNullOrBlank()) return null
+
+        // Check for the binary in various locations
+        // Note: Homebrew's whisper-cpp installs as "whisper-cli" not "whisper"
+        val binaryNames = listOf("whisper-cli", "whisper", "whisper-cpp", "main")
+        val searchDirs = listOf("$prefix/bin", "$prefix/libexec/bin", prefix)
+
+        for (dir in searchDirs) {
+            for (name in binaryNames) {
+                val path = "$dir/$name"
+                val file = File(path)
+                if (file.exists() && file.canExecute()) {
+                    logger.debug { "Found whisper binary at: $path" }
+                    return path
+                }
+            }
+        }
+
+        // Also check common Homebrew bin directories
+        val brewBinDirs = listOf("/opt/homebrew/bin", "/usr/local/bin")
+        for (dir in brewBinDirs) {
+            for (name in binaryNames) {
+                val path = "$dir/$name"
+                val file = File(path)
+                if (file.exists() && file.canExecute()) {
+                    logger.debug { "Found whisper binary in Homebrew bin: $path" }
+                    return path
+                }
+            }
+        }
+
+        // Log what we found for debugging
+        logger.warn { "Could not find whisper binary. Prefix: $prefix" }
+        try {
+            val binDir = File("$prefix/bin")
+            if (binDir.exists()) {
+                logger.debug { "Contents of $prefix/bin: ${binDir.listFiles()?.map { it.name }}" }
+            }
+        } catch (e: Exception) {
+            logger.debug { "Could not list prefix bin directory: ${e.message}" }
+        }
+
+        return null
+    }
+
+    /**
+     * Gets whisper.cpp version by running whisper --version or parsing help output.
+     */
+    private fun getWhisperVersion(whisperFile: File): String? {
+        return try {
+            // Try --version first
+            var process = ProcessBuilder(whisperFile.absolutePath, "--version")
+                .redirectErrorStream(true)
+                .start()
+            var output = process.inputStream.bufferedReader().readText()
+            process.waitFor()
+
+            if (process.exitValue() == 0 && output.isNotBlank()) {
+                return output.trim().take(20)
+            }
+
+            // Fall back to -h and look for version in output
+            process = ProcessBuilder(whisperFile.absolutePath, "-h")
+                .redirectErrorStream(true)
+                .start()
+            output = process.inputStream.bufferedReader().readText()
+            process.waitFor()
+
+            val versionRegex = Regex("v?(\\d+\\.\\d+\\.\\d+)")
+            versionRegex.find(output)?.groupValues?.get(1)
+        } catch (e: Exception) {
+            logger.debug { "Could not get whisper version: ${e.message}" }
+            null
+        }
+    }
+
+    /**
+     * Installs whisper.cpp on Linux using package manager or Homebrew.
+     */
+    private suspend fun installWhisperCppOnLinux(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Detecting package manager...")
+
+        // Try Homebrew first (Linuxbrew)
+        val brewPath = findBrewPath()
+        if (brewPath != null) {
+            logger.info { "Found Linuxbrew, using it to install whisper.cpp" }
+            installWhisperCppViaBrew(onProgress)
+            return
+        }
+
+        // Try to find a system package manager
+        val packageManager = detectLinuxPackageManager()
+
+        if (packageManager != null) {
+            onProgress(0.1f, "Installing whisper.cpp via ${packageManager.name}...")
+            logger.info { "Using ${packageManager.name} to install whisper.cpp" }
+
+            try {
+                val process = ProcessBuilder(*packageManager.installCommand.toTypedArray())
+                    .redirectErrorStream(true)
+                    .start()
+
+                val reader = process.inputStream.bufferedReader()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    logger.debug { "[${packageManager.name}] $line" }
+                    when {
+                        line!!.contains("Downloading", ignoreCase = true) ->
+                            onProgress(0.3f, "Downloading whisper.cpp...")
+                        line!!.contains("Installing", ignoreCase = true) ->
+                            onProgress(0.6f, "Installing whisper.cpp...")
+                        line!!.contains("Setting up", ignoreCase = true) ->
+                            onProgress(0.8f, "Finalizing installation...")
+                    }
+                }
+
+                val exitCode = process.waitFor()
+                if (exitCode != 0) {
+                    throw UpdateException(
+                        "Failed to install whisper.cpp via ${packageManager.name} (exit code: $exitCode). " +
+                        "You may need to run with sudo privileges."
+                    )
+                }
+
+                // Find the installed binary
+                val whisperPath = findSystemWhisperPath()
+                if (whisperPath == null) {
+                    throw UpdateException(
+                        "whisper.cpp was installed but binary not found. " +
+                        "Try running: which whisper"
+                    )
+                }
+
+                onProgress(0.9f, "Copying binary...")
+
+                // Copy to our bin directory
+                val whisperTarget = File(platformPaths.getBinaryPath("whisper"))
+                whisperTarget.parentFile?.mkdirs()
+                Files.copy(
+                    Path.of(whisperPath),
+                    whisperTarget.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+                whisperTarget.setExecutable(true)
+
+                val version = getWhisperVersion(whisperTarget) ?: "unknown"
+                val versions = configManager.getInstalledVersions()
+                configManager.saveInstalledVersions(versions.copy(whisperCpp = version))
+
+                onProgress(1f, "whisper.cpp $version installed")
+                logger.info { "whisper.cpp installed successfully via ${packageManager.name}" }
+                return
+
+            } catch (e: UpdateException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warn { "Package manager installation failed: ${e.message}" }
+                // Fall through to build from source
+            }
+        }
+
+        // No package manager available - provide instructions
+        throw UpdateException(
+            "Could not automatically install whisper.cpp on Linux. Please install manually:\n\n" +
+            "Option 1: Install Homebrew and run: brew install whisper-cpp\n" +
+            "Option 2: Build from source:\n" +
+            "  git clone https://github.com/ggerganov/whisper.cpp.git\n" +
+            "  cd whisper.cpp && make\n" +
+            "  cp main ~/Library/Application\\ Support/VideoTranslator/bin/whisper"
+        )
+    }
+
+    /**
+     * Represents a Linux package manager.
+     */
+    private data class LinuxPackageManager(
+        val name: String,
+        val installCommand: List<String>
+    )
+
+    /**
+     * Detects available Linux package manager.
+     */
+    private fun detectLinuxPackageManager(): LinuxPackageManager? {
+        // Check for various package managers
+        val packageManagers = listOf(
+            // Flatpak (universal)
+            LinuxPackageManager("flatpak", listOf("flatpak", "install", "-y", "flathub", "io.github.ggerganov.whisper")),
+            // Note: whisper.cpp may not be in all package managers, these are aspirational
+        )
+
+        for (pm in packageManagers) {
+            val pmName = pm.installCommand.first()
+            if (isCommandAvailable(pmName)) {
+                return pm
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Checks if a command is available in PATH.
+     */
+    private fun isCommandAvailable(command: String): Boolean {
+        return try {
+            val process = ProcessBuilder("which", command)
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor()
+            process.exitValue() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Finds whisper binary in system PATH.
+     */
+    private fun findSystemWhisperPath(): String? {
+        val binaryNames = listOf("whisper-cli", "whisper", "whisper-cpp", "main")
+
+        for (name in binaryNames) {
+            try {
+                val process = ProcessBuilder("which", name)
+                    .redirectErrorStream(true)
+                    .start()
+                val result = process.inputStream.bufferedReader().readLine()
+                process.waitFor()
+                if (process.exitValue() == 0 && result?.isNotBlank() == true) {
+                    logger.debug { "Found whisper in PATH: $result" }
+                    return result
+                }
+            } catch (e: Exception) {
+                continue
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Downloads and installs whisper.cpp from GitHub releases (Windows only).
+     */
+    private suspend fun installWhisperCppFromGitHub(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Fetching whisper.cpp release...")
 
         val release = getLatestRelease(WHISPER_REPO)
         val downloadUrl = getWhisperCppDownloadUrl(release)
@@ -306,7 +695,7 @@ class UpdateManager(
         val archiveFile = File(platformPaths.cacheDir, "whisper.zip")
         val extractDir = File(platformPaths.cacheDir, "whisper-extract")
 
-        send(DownloadProgress(0.05f, "Downloading whisper.cpp ${release.tagName}..."))
+        onProgress(0.05f, "Downloading whisper.cpp ${release.tagName}...")
 
         downloadFileWithRetry(
             url = downloadUrl,
@@ -314,10 +703,10 @@ class UpdateManager(
             targetFile = archiveFile,
             expectedChecksum = null
         ) { progress, message ->
-            send(DownloadProgress(0.05f + progress * 0.65f, message))
+            onProgress(0.05f + progress * 0.65f, message)
         }
 
-        send(DownloadProgress(0.7f, "Extracting whisper.cpp..."))
+        onProgress(0.7f, "Extracting whisper.cpp...")
 
         // Clean up existing extraction directory
         if (extractDir.exists()) {
@@ -333,11 +722,11 @@ class UpdateManager(
         ) { progress ->
             val extractProgress = progress.percentage
             if (extractProgress >= 0) {
-                send(DownloadProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}"))
+                onProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}")
             }
         }
 
-        send(DownloadProgress(0.9f, "Installing whisper.cpp..."))
+        onProgress(0.9f, "Installing whisper.cpp...")
 
         // Find the whisper binary (might be named 'main', 'whisper', 'whisper-cpp', etc.)
         val whisperBinaryNames = listOf("main", "whisper", "whisper-cpp", "whisper.cpp")
@@ -379,9 +768,9 @@ class UpdateManager(
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(whisperCpp = release.tagName))
 
-        send(DownloadProgress(1f, "whisper.cpp ${release.tagName} installed"))
+        onProgress(1f, "whisper.cpp ${release.tagName} installed")
         logger.info { "whisper.cpp ${release.tagName} installed successfully" }
-    }.flowOn(Dispatchers.IO)
+    }
 
     // ========== Dependency Updates ==========
 
@@ -613,22 +1002,58 @@ class UpdateManager(
     }
 
     private fun getWhisperCppDownloadUrl(release: GitHubRelease): String {
-        val pattern = when (platformPaths.operatingSystem) {
-            OperatingSystem.WINDOWS -> Regex(".*win.*x64.*\\.zip", RegexOption.IGNORE_CASE)
-            OperatingSystem.MACOS -> Regex(".*macos.*\\.zip", RegexOption.IGNORE_CASE)
-            OperatingSystem.LINUX -> Regex(".*linux.*x64.*\\.zip", RegexOption.IGNORE_CASE)
-        }
+        // whisper.cpp release naming convention:
+        // Windows: whisper-bin-x64.zip, whisper-bin-Win32.zip, whisper-blas-bin-x64.zip
+        // No pre-built binaries for macOS or Linux (handled separately)
 
-        return release.assets.find { pattern.matches(it.name) }?.browserDownloadUrl
-            ?: release.assets.find {
-                val name = it.name.lowercase()
-                when (platformPaths.operatingSystem) {
-                    OperatingSystem.WINDOWS -> "win" in name && "bin" in name
-                    OperatingSystem.MACOS -> "macos" in name || "darwin" in name
-                    OperatingSystem.LINUX -> "linux" in name && "bin" in name
+        when (platformPaths.operatingSystem) {
+            OperatingSystem.WINDOWS -> {
+                // Prefer x64 basic binary, then x64 with BLAS, then Win32
+                val preferredPatterns = listOf(
+                    Regex("whisper-bin-x64\\.zip", RegexOption.IGNORE_CASE),
+                    Regex("whisper-blas-bin-x64\\.zip", RegexOption.IGNORE_CASE),
+                    Regex("whisper-bin-Win32\\.zip", RegexOption.IGNORE_CASE)
+                )
+
+                for (pattern in preferredPatterns) {
+                    val asset = release.assets.find { pattern.matches(it.name) }
+                    if (asset != null) {
+                        logger.info { "Found Windows whisper binary: ${asset.name}" }
+                        return asset.browserDownloadUrl
+                    }
                 }
-            }?.browserDownloadUrl
-            ?: throw UpdateException("whisper.cpp binary not found for ${platformPaths.operatingSystem}")
+
+                // Fallback: any zip with "bin" and "x64" or "win"
+                val fallback = release.assets.find { asset ->
+                    val name = asset.name.lowercase()
+                    name.endsWith(".zip") && "bin" in name && ("x64" in name || "win" in name)
+                }
+                if (fallback != null) {
+                    logger.info { "Found Windows whisper binary (fallback): ${fallback.name}" }
+                    return fallback.browserDownloadUrl
+                }
+
+                throw UpdateException(
+                    "No Windows whisper.cpp binary found in release ${release.tagName}. " +
+                    "Available assets: ${release.assets.map { it.name }}"
+                )
+            }
+            OperatingSystem.LINUX -> {
+                // whisper.cpp doesn't provide pre-built Linux binaries
+                // This should be handled by installWhisperCpp() using package manager
+                throw UpdateException(
+                    "No pre-built Linux binaries available for whisper.cpp. " +
+                    "Please install via your package manager or build from source."
+                )
+            }
+            OperatingSystem.MACOS -> {
+                // macOS is handled separately via Homebrew
+                throw UpdateException(
+                    "No pre-built macOS binaries available for whisper.cpp. " +
+                    "This should be installed via Homebrew."
+                )
+            }
+        }
     }
 
     private fun getAppDownloadUrl(release: GitHubRelease): String {

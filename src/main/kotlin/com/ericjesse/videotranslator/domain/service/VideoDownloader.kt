@@ -7,7 +7,7 @@ import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.json.Json
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
@@ -227,8 +227,8 @@ class VideoDownloader(
     fun download(
         videoInfo: VideoInfo,
         options: YtDlpDownloadOptions = YtDlpDownloadOptions()
-    ): Flow<StageProgress> = flow {
-        emit(StageProgress(0f, "Initializing download..."))
+    ): Flow<StageProgress> = channelFlow {
+        send(StageProgress(0f, "Initializing download..."))
 
         val outputPath = getDownloadedVideoPath(videoInfo, options.audioOnly)
 
@@ -293,13 +293,13 @@ class VideoDownloader(
             processExecutor.execute(command) { line ->
                 val progress = parseProgress(line)
                 if (progress != null) {
-                    emit(progress)
+                    send(progress)
                 } else {
                     errors.appendLine(line)
                 }
             }
 
-            emit(StageProgress(1f, "Download complete"))
+            send(StageProgress(1f, "Download complete"))
             logger.info { "Download complete: $outputPath" }
 
         } catch (e: ProcessException) {

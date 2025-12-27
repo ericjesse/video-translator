@@ -48,7 +48,7 @@ data class YtDlpVideoInfo(
     val channelId: String? = null,
     @SerialName("channel_url")
     val channelUrl: String? = null,
-    val duration: Long? = null,
+    val duration: Double? = null,
     @SerialName("view_count")
     val viewCount: Long? = null,
     @SerialName("like_count")
@@ -134,7 +134,7 @@ data class YtDlpVideoInfo(
             url = webpageUrl ?: originalUrl ?: "",
             id = id,
             title = title,
-            duration = duration ?: 0L,
+            duration = ((duration ?: 0.0) * 1000).toLong(), // Convert seconds to milliseconds
             thumbnailUrl = thumbnail
         )
     }

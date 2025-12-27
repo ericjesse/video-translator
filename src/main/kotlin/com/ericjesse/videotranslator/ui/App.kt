@@ -2,8 +2,13 @@ package com.ericjesse.videotranslator.ui
 
 import androidx.compose.runtime.*
 import com.ericjesse.videotranslator.di.AppModule
+import com.ericjesse.videotranslator.domain.model.TranslationJob
 import com.ericjesse.videotranslator.ui.error.GlobalErrorDisplay
-import com.ericjesse.videotranslator.ui.screens.*
+import com.ericjesse.videotranslator.ui.screens.main.MainScreen
+import com.ericjesse.videotranslator.ui.screens.main.MainViewModel
+import com.ericjesse.videotranslator.ui.screens.progress.ProgressScreen
+import com.ericjesse.videotranslator.ui.screens.progress.ProgressViewModel
+import com.ericjesse.videotranslator.ui.screens.settings.SettingsScreen
 import com.ericjesse.videotranslator.ui.screens.setup.SetupWizard
 
 /**
@@ -12,7 +17,7 @@ import com.ericjesse.videotranslator.ui.screens.setup.SetupWizard
 sealed class Screen {
     data object SetupWizard : Screen()
     data object Main : Screen()
-    data class Progress(val jobId: String) : Screen()
+    data class Progress(val job: TranslationJob) : Screen()
     data object Settings : Screen()
 }
 
@@ -24,34 +29,26 @@ sealed class Screen {
 fun App(appModule: AppModule) {
     val configManager = appModule.configManager
     val isFirstRun = configManager.isFirstRun()
-    
-    var currentScreen by remember { 
+
+    var currentScreen by remember {
         mutableStateOf<Screen>(
             if (isFirstRun) Screen.SetupWizard else Screen.Main
         )
     }
-    
+
     // Navigation callbacks
-    val navigateTo: (Screen) -> Unit = { screen ->
-        currentScreen = screen
-    }
-    
     val navigateToMain: () -> Unit = {
         currentScreen = Screen.Main
     }
-    
+
     val navigateToSettings: () -> Unit = {
         currentScreen = Screen.Settings
     }
-    
-    val navigateToProgress: (String) -> Unit = { jobId ->
-        currentScreen = Screen.Progress(jobId)
+
+    val navigateToProgress: (TranslationJob) -> Unit = { job ->
+        currentScreen = Screen.Progress(job)
     }
-    
-    val navigateBack: () -> Unit = {
-        currentScreen = Screen.Main
-    }
-    
+
     // Wrap everything with global error display
     GlobalErrorDisplay(
         onNavigateToSettings = navigateToSettings
@@ -66,19 +63,37 @@ fun App(appModule: AppModule) {
             }
 
             is Screen.Main -> {
+                // Create and remember MainViewModel
+                val mainViewModel = remember { MainViewModel(appModule) }
+
+                // Dispose ViewModel when leaving composition
+                DisposableEffect(Unit) {
+                    onDispose { mainViewModel.dispose() }
+                }
+
                 MainScreen(
                     appModule = appModule,
-                    onStartTranslation = navigateToProgress,
+                    viewModel = mainViewModel,
+                    onTranslate = navigateToProgress,
                     onOpenSettings = navigateToSettings
                 )
             }
 
             is Screen.Progress -> {
+                // Create and remember ProgressViewModel for this job
+                val progressViewModel = remember(screen.job) {
+                    ProgressViewModel(appModule, screen.job)
+                }
+
+                // Dispose ViewModel when leaving composition
+                DisposableEffect(screen.job) {
+                    onDispose { progressViewModel.dispose() }
+                }
+
                 ProgressScreen(
                     appModule = appModule,
-                    jobId = screen.jobId,
-                    onComplete = navigateToMain,
-                    onCancel = navigateToMain,
+                    viewModel = progressViewModel,
+                    onTranslateAnother = navigateToMain,
                     onOpenSettings = navigateToSettings
                 )
             }
@@ -86,7 +101,7 @@ fun App(appModule: AppModule) {
             is Screen.Settings -> {
                 SettingsScreen(
                     appModule = appModule,
-                    onBack = navigateBack
+                    onBack = navigateToMain
                 )
             }
         }

@@ -107,11 +107,20 @@ fun DownloadingStep(
             )
         )
     }
-    var whisperState by remember {
+    var whisperCppState by remember {
         mutableStateOf(
             ComponentDownloadState(
-                name = "whisper",
-                displayName = "Whisper $selectedWhisperModel",
+                name = "whispercpp",
+                displayName = "whisper.cpp",
+                totalSize = 5_000_000L // ~5MB for the binary
+            )
+        )
+    }
+    var whisperModelState by remember {
+        mutableStateOf(
+            ComponentDownloadState(
+                name = "whispermodel",
+                displayName = "Whisper $selectedWhisperModel model",
                 totalSize = WhisperModel.fromId(selectedWhisperModel).sizeBytes
             )
         )
@@ -166,7 +175,7 @@ fun DownloadingStep(
             return@LaunchedEffect
         }
 
-        // Download FFmpeg
+        // Download FFmpeg (25% - 45%)
         currentStatusMessage = i18n["setup.downloading.from", "FFmpeg", "gyan.dev"]
         ffmpegState = ffmpegState.copy(status = DownloadStatus.DOWNLOADING)
 
@@ -185,7 +194,7 @@ fun DownloadingStep(
                         downloadedSize = (ffmpegState.totalSize * progress.percentage).toLong(),
                         message = progress.message
                     )
-                    overallProgress = 0.25f + progress.percentage * 0.35f
+                    overallProgress = 0.25f + progress.percentage * 0.20f
                 }
 
             if (ffmpegState.status != DownloadStatus.ERROR) {
@@ -204,33 +213,71 @@ fun DownloadingStep(
             return@LaunchedEffect
         }
 
-        // Download Whisper model
-        currentStatusMessage = i18n["setup.downloading.from", "Whisper $selectedWhisperModel", "huggingface.co"]
-        whisperState = whisperState.copy(status = DownloadStatus.DOWNLOADING)
+        // Download whisper.cpp binary (45% - 60%)
+        currentStatusMessage = i18n["setup.downloading.from", "whisper.cpp", "github.com"]
+        whisperCppState = whisperCppState.copy(status = DownloadStatus.DOWNLOADING)
 
         try {
-            updateManager.installWhisperModel(selectedWhisperModel)
+            updateManager.installWhisperCpp()
                 .catch { e ->
-                    whisperState = whisperState.copy(
+                    whisperCppState = whisperCppState.copy(
                         status = DownloadStatus.ERROR,
                         errorMessage = e.message ?: "Download failed"
                     )
                     hasError = true
                 }
                 .collect { progress ->
-                    whisperState = whisperState.copy(
+                    whisperCppState = whisperCppState.copy(
                         progress = progress.percentage,
-                        downloadedSize = (whisperState.totalSize * progress.percentage).toLong(),
+                        downloadedSize = (whisperCppState.totalSize * progress.percentage).toLong(),
                         message = progress.message
                     )
-                    overallProgress = 0.6f + progress.percentage * 0.4f
+                    overallProgress = 0.45f + progress.percentage * 0.15f
                 }
 
-            if (whisperState.status != DownloadStatus.ERROR) {
-                whisperState = whisperState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
+            if (whisperCppState.status != DownloadStatus.ERROR) {
+                whisperCppState = whisperCppState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
             }
         } catch (e: Exception) {
-            whisperState = whisperState.copy(
+            whisperCppState = whisperCppState.copy(
+                status = DownloadStatus.ERROR,
+                errorMessage = e.message ?: "Download failed"
+            )
+            hasError = true
+        }
+
+        if (hasError) {
+            isDownloading = false
+            return@LaunchedEffect
+        }
+
+        // Download Whisper model (60% - 100%)
+        currentStatusMessage = i18n["setup.downloading.from", "Whisper $selectedWhisperModel model", "huggingface.co"]
+        whisperModelState = whisperModelState.copy(status = DownloadStatus.DOWNLOADING)
+
+        try {
+            updateManager.installWhisperModel(selectedWhisperModel)
+                .catch { e ->
+                    whisperModelState = whisperModelState.copy(
+                        status = DownloadStatus.ERROR,
+                        errorMessage = e.message ?: "Download failed"
+                    )
+                    hasError = true
+                }
+                .collect { progress ->
+                    whisperModelState = whisperModelState.copy(
+                        progress = progress.percentage,
+                        downloadedSize = (whisperModelState.totalSize * progress.percentage).toLong(),
+                        message = progress.message
+                    )
+                    overallProgress = 0.60f + progress.percentage * 0.40f
+                }
+
+            if (whisperModelState.status != DownloadStatus.ERROR) {
+                whisperModelState = whisperModelState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
+            }
+        } catch (e: Exception) {
+            whisperModelState = whisperModelState.copy(
                 status = DownloadStatus.ERROR,
                 errorMessage = e.message ?: "Download failed"
             )
@@ -314,9 +361,20 @@ fun DownloadingStep(
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
 
-                // Whisper
+                // whisper.cpp binary
                 DownloadComponentItem(
-                    state = whisperState,
+                    state = whisperCppState,
+                    i18n = i18n
+                )
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                // Whisper model
+                DownloadComponentItem(
+                    state = whisperModelState,
                     i18n = i18n
                 )
             }
@@ -404,8 +462,15 @@ fun DownloadingStep(
                                 progress = 0f
                             )
                         }
-                        if (whisperState.status == DownloadStatus.ERROR) {
-                            whisperState = whisperState.copy(
+                        if (whisperCppState.status == DownloadStatus.ERROR) {
+                            whisperCppState = whisperCppState.copy(
+                                status = DownloadStatus.PENDING,
+                                errorMessage = null,
+                                progress = 0f
+                            )
+                        }
+                        if (whisperModelState.status == DownloadStatus.ERROR) {
+                            whisperModelState = whisperModelState.copy(
                                 status = DownloadStatus.PENDING,
                                 errorMessage = null,
                                 progress = 0f

@@ -158,7 +158,7 @@ class ConnectivityChecker(
     private val _status = MutableStateFlow(
         ConnectivityStatus(
             state = ConnectivityState.UNKNOWN,
-            internetAvailable = false
+            internetAvailable = true  // Assume available until proven otherwise
         )
     )
     val status: StateFlow<ConnectivityStatus> = _status.asStateFlow()

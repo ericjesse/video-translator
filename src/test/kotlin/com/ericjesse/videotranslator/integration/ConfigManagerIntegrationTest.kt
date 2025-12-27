@@ -215,9 +215,15 @@ class ConfigManagerIntegrationTest {
         }
 
         @Test
-        fun `isFirstRun returns false after saving settings`() {
-            configManager.saveSettings(AppSettings())
+        fun `isFirstRun returns false after saving settings with completed setup`() {
+            configManager.saveSettings(AppSettings(setupProgress = SetupProgress(completed = true)))
             assertFalse(configManager.isFirstRun())
+        }
+
+        @Test
+        fun `isFirstRun returns true if setup not completed`() {
+            configManager.saveSettings(AppSettings(setupProgress = SetupProgress(completed = false)))
+            assertTrue(configManager.isFirstRun())
         }
     }
 

@@ -8,7 +8,7 @@ import com.ericjesse.videotranslator.infrastructure.resources.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -102,7 +102,7 @@ class PipelineOrchestrator(
      * @param checkpoint Optional checkpoint to resume from.
      * @return Flow of pipeline stage updates.
      */
-    fun execute(job: TranslationJob, checkpoint: PipelineCheckpoint? = null): Flow<PipelineStage> = flow {
+    fun execute(job: TranslationJob, checkpoint: PipelineCheckpoint? = null): Flow<PipelineStage> = channelFlow {
         val jobId = UUID.randomUUID().toString()
         val startTime = System.currentTimeMillis()
 
@@ -149,12 +149,12 @@ class PipelineOrchestrator(
             // Pre-flight resource checks
             val resourceCheckResult = performPreflightResourceChecks(job)
             if (resourceCheckResult != null) {
-                emit(resourceCheckResult)
-                return@flow
+                send(resourceCheckResult)
+                return@channelFlow
             }
             // Stage 1: Download video (if not resuming past this stage)
             if (startStage.order <= PipelineStageName.DOWNLOAD.order) {
-                val downloadResult = executeDownloadStage(job) { emit(it) }
+                val downloadResult = executeDownloadStage(job) { send(it) }
                 when (downloadResult) {
                     is StageResult.Success -> {
                         downloadedVideoPath = downloadResult.data
@@ -162,8 +162,8 @@ class PipelineOrchestrator(
                     }
                     is StageResult.Failure -> {
                         emitError(downloadResult.error)
-                        emit(createErrorStage(downloadResult.error))
-                        return@flow
+                        send(createErrorStage(downloadResult.error))
+                        return@channelFlow
                     }
                     else -> {}
                 }
@@ -171,7 +171,7 @@ class PipelineOrchestrator(
 
             // Stage 2: Check for existing captions
             if (startStage.order <= PipelineStageName.CAPTION_CHECK.order) {
-                emit(PipelineStage.CheckingCaptions("Checking for YouTube captions..."))
+                send(PipelineStage.CheckingCaptions("Checking for YouTube captions..."))
                 emitLog(PipelineLogEvent.StageTransition(
                     stage = PipelineStageName.CAPTION_CHECK,
                     message = "Checking for existing captions",
@@ -205,7 +205,7 @@ class PipelineOrchestrator(
 
             // Stage 3: Transcribe audio (if no captions found and not resuming past this)
             if (subtitles == null && startStage.order <= PipelineStageName.TRANSCRIPTION.order) {
-                val transcribeResult = executeTranscriptionStage(downloadedVideoPath!!, job) { emit(it) }
+                val transcribeResult = executeTranscriptionStage(downloadedVideoPath!!, job) { send(it) }
                 when (transcribeResult) {
                     is StageResult.Success -> {
                         subtitles = transcribeResult.data
@@ -213,8 +213,8 @@ class PipelineOrchestrator(
                     }
                     is StageResult.Failure -> {
                         emitError(transcribeResult.error)
-                        emit(createErrorStage(transcribeResult.error))
-                        return@flow
+                        send(createErrorStage(transcribeResult.error))
+                        return@channelFlow
                     }
                     is StageResult.Skipped -> {
                         emitLog(PipelineLogEvent.Info(
@@ -228,7 +228,7 @@ class PipelineOrchestrator(
 
             // Stage 4: Translate subtitles
             if (startStage.order <= PipelineStageName.TRANSLATION.order && translatedSubtitles == null) {
-                val translateResult = executeTranslationStage(subtitles!!, job) { emit(it) }
+                val translateResult = executeTranslationStage(subtitles!!, job) { send(it) }
                 when (translateResult) {
                     is StageResult.Success -> {
                         translatedSubtitles = translateResult.data
@@ -236,15 +236,15 @@ class PipelineOrchestrator(
                     }
                     is StageResult.Failure -> {
                         emitError(translateResult.error)
-                        emit(createErrorStage(translateResult.error))
-                        return@flow
+                        send(createErrorStage(translateResult.error))
+                        return@channelFlow
                     }
                     else -> {}
                 }
             }
 
             // Stage 5: Render output
-            val renderResult = executeRenderStage(downloadedVideoPath!!, translatedSubtitles!!, job) { emit(it) }
+            val renderResult = executeRenderStage(downloadedVideoPath!!, translatedSubtitles!!, job) { send(it) }
             when (renderResult) {
                 is StageResult.Success -> {
                     val duration = System.currentTimeMillis() - startTime
@@ -262,11 +262,11 @@ class PipelineOrchestrator(
                     // Cleanup checkpoint on success
                     deleteCheckpoint(jobId)
 
-                    emit(PipelineStage.Complete(result))
+                    send(PipelineStage.Complete(result))
                 }
                 is StageResult.Failure -> {
                     emitError(renderResult.error)
-                    emit(createErrorStage(renderResult.error))
+                    send(createErrorStage(renderResult.error))
                 }
                 else -> {}
             }
@@ -277,13 +277,13 @@ class PipelineOrchestrator(
                 message = "Pipeline cancelled by user"
             ))
             cleanupResources(jobId)
-            emit(PipelineStage.Cancelled)
+            send(PipelineStage.Cancelled)
             throw e
         } catch (e: Exception) {
             val error = ErrorMapper.mapException(e, determineCurrentStage(subtitles, translatedSubtitles))
             emitError(error)
             cleanupResources(jobId)
-            emit(createErrorStage(error))
+            send(createErrorStage(error))
         } finally {
             resourceManager?.stopMonitoring()
             resourceManager?.stopOperationTracking(jobId)

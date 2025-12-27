@@ -172,7 +172,7 @@ class VideoDownloaderTest {
 
             assertEquals("dQw4w9WgXcQ", info.id)
             assertEquals("Test Video Title", info.title)
-            assertEquals(300L, info.duration)
+            assertEquals(300.0, info.duration)
             assertEquals("https://example.com/thumb.jpg", info.thumbnail)
             assertEquals("Test Channel", info.uploader)
             assertEquals(1000000L, info.viewCount)
@@ -217,7 +217,7 @@ class VideoDownloaderTest {
 
             assertEquals("xVkU8dDSC3Y", info.id)
             assertEquals("Simple Video", info.title)
-            assertEquals(180L, info.duration)
+            assertEquals(180000L, info.duration) // 180 seconds = 180000 milliseconds
             assertEquals("https://example.com/thumb.jpg", info.thumbnailUrl)
         }
 

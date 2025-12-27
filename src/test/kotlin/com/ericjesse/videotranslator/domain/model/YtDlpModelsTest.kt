@@ -64,7 +64,7 @@ class YtDlpModelsTest {
             assertEquals("A test description", info.description)
             assertEquals("20231215", info.uploadDate)
             assertEquals("Test Channel", info.uploader)
-            assertEquals(300L, info.duration)
+            assertEquals(300.0, info.duration)
             assertEquals(1000000L, info.viewCount)
             assertEquals(50000L, info.likeCount)
             assertEquals("https://example.com/thumb.jpg", info.thumbnail)
@@ -184,7 +184,7 @@ class YtDlpModelsTest {
             val ytInfo = YtDlpVideoInfo(
                 id = "abc123",
                 title = "Test Video",
-                duration = 180,
+                duration = 180.0, // seconds from yt-dlp
                 thumbnail = "https://example.com/thumb.jpg",
                 webpageUrl = "https://www.youtube.com/watch?v=abc123"
             )
@@ -193,7 +193,7 @@ class YtDlpModelsTest {
 
             assertEquals("abc123", videoInfo.id)
             assertEquals("Test Video", videoInfo.title)
-            assertEquals(180L, videoInfo.duration)
+            assertEquals(180000L, videoInfo.duration) // converted to milliseconds
             assertEquals("https://example.com/thumb.jpg", videoInfo.thumbnailUrl)
             assertEquals("https://www.youtube.com/watch?v=abc123", videoInfo.url)
         }
@@ -599,7 +599,7 @@ class YtDlpModelsTest {
             val info = json.decodeFromString<YtDlpVideoInfo>(jsonStr)
 
             assertEquals("test123", info.id)
-            assertEquals(600L, info.duration)
+            assertEquals(600.0, info.duration)
 
             // Verify formats
             assertNotNull(info.formats)

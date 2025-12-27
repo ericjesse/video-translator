@@ -6,7 +6,7 @@ import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
 
@@ -47,10 +47,10 @@ class SubtitleRenderer(
         subtitles: Subtitles,
         outputOptions: OutputOptions,
         videoInfo: VideoInfo
-    ): Flow<StageProgress> = flow {
+    ): Flow<StageProgress> = channelFlow {
         val renderOptions = outputOptions.renderOptions ?: RenderOptions()
 
-        emit(StageProgress(0f, RenderProgress(
+        send(StageProgress(0f, RenderProgress(
             percentage = 0f,
             currentTime = 0,
             totalTime = videoInfo.duration,
@@ -71,7 +71,7 @@ class SubtitleRenderer(
         // Ensure output directory exists
         File(outputOptions.outputDirectory).mkdirs()
 
-        emit(StageProgress(0.05f, RenderProgress(
+        send(StageProgress(0.05f, RenderProgress(
             percentage = 0.05f,
             currentTime = 0,
             totalTime = videoInfo.duration,
@@ -90,7 +90,7 @@ class SubtitleRenderer(
             writeSrtFile(subtitles, subtitleFile)
         }
 
-        emit(StageProgress(0.1f, RenderProgress(
+        send(StageProgress(0.1f, RenderProgress(
             percentage = 0.1f,
             currentTime = 0,
             totalTime = videoInfo.duration,
@@ -101,7 +101,7 @@ class SubtitleRenderer(
         when (outputOptions.subtitleType) {
             SubtitleType.SOFT -> {
                 renderSoftSubtitles(videoPath, subtitleFile.absolutePath, outputPath, videoInfo.duration) { progress ->
-                    emit(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
+                    send(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
                 }
             }
             SubtitleType.BURNED_IN -> {
@@ -113,12 +113,12 @@ class SubtitleRenderer(
                     useAss,
                     videoInfo.duration
                 ) { progress ->
-                    emit(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
+                    send(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
                 }
             }
         }
 
-        emit(StageProgress(0.95f, RenderProgress(
+        send(StageProgress(0.95f, RenderProgress(
             percentage = 0.95f,
             currentTime = videoInfo.duration,
             totalTime = videoInfo.duration,
@@ -153,7 +153,7 @@ class SubtitleRenderer(
             duration = 0 // Will be set by orchestrator
         )
 
-        emit(StageProgress(1f, RenderProgress(
+        send(StageProgress(1f, RenderProgress(
             percentage = 1f,
             currentTime = videoInfo.duration,
             totalTime = videoInfo.duration,
