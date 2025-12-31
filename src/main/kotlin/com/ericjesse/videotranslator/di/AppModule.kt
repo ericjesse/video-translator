@@ -8,6 +8,7 @@ import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceChecker
 import com.ericjesse.videotranslator.infrastructure.resources.ResourceManager
 import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
+import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
 import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
 import com.ericjesse.videotranslator.domain.service.VideoDownloader
 import com.ericjesse.videotranslator.domain.service.TranscriberService
@@ -31,6 +32,9 @@ class AppModule {
     val updateManager: UpdateManager by lazy { UpdateManager(httpClient, platformPaths, configManager) }
     val connectivityChecker: ConnectivityChecker by lazy { ConnectivityChecker(httpClient) }
     val i18nManager: I18nManager by lazy { I18nManager(configManager) }
+    val libreTranslateService: LibreTranslateService by lazy {
+        LibreTranslateService(platformPaths, httpClient)
+    }
 
     // Resource Management
     val tempFileManager: TempFileManager by lazy { TempFileManager(platformPaths) }
@@ -40,14 +44,14 @@ class AppModule {
     }
     
     // Domain Services
-    val videoDownloader: VideoDownloader by lazy { 
-        VideoDownloader(processExecutor, platformPaths) 
+    val videoDownloader: VideoDownloader by lazy {
+        VideoDownloader(processExecutor, platformPaths, configManager)
     }
-    val transcriberService: TranscriberService by lazy { 
-        TranscriberService(processExecutor, platformPaths, configManager) 
+    val transcriberService: TranscriberService by lazy {
+        TranscriberService(processExecutor, platformPaths, configManager, tempFileManager)
     }
-    val translatorService: TranslatorService by lazy { 
-        TranslatorService(httpClient, configManager) 
+    val translatorService: TranslatorService by lazy {
+        TranslatorService(httpClient, configManager, libreTranslateService)
     }
     val subtitleRenderer: SubtitleRenderer by lazy { 
         SubtitleRenderer(processExecutor, platformPaths, configManager) 
@@ -68,6 +72,7 @@ class AppModule {
     }
     
     fun close() {
+        libreTranslateService.dispose()
         connectivityChecker.close()
         resourceManager.close()
         diskSpaceChecker.close()

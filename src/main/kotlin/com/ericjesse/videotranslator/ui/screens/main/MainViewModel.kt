@@ -47,7 +47,7 @@ private val VIDEO_ID_REGEX = Regex(
  *
  * @property youtubeUrl The YouTube video URL entered by the user.
  * @property urlError Error message for URL validation, or null if valid.
- * @property sourceLanguage Source language for translation, or null for auto-detect.
+ * @property sourceLanguage Source language for translation.
  * @property targetLanguage Target language for translation.
  * @property subtitleType Type of subtitle output (soft or burned-in).
  * @property burnedInStyle Styling options for burned-in subtitles.
@@ -64,9 +64,9 @@ private val VIDEO_ID_REGEX = Regex(
 data class MainScreenState(
     val youtubeUrl: String = "",
     val urlError: String? = null,
-    val sourceLanguage: Language? = null,
+    val sourceLanguage: Language? = Language.ENGLISH,
     val targetLanguage: Language = Language.ENGLISH,
-    val subtitleType: SubtitleType = SubtitleType.SOFT,
+    val subtitleType: SubtitleType = SubtitleType.BURNED_IN,
     val burnedInStyle: BurnedInSubtitleStyle = BurnedInSubtitleStyle(),
     val exportSrt: Boolean = false,
     val outputDirectory: String = "",
@@ -89,9 +89,10 @@ data class MainScreenState(
 
     /**
      * Whether a translation job can be started.
+     * Enabled as soon as video metadata is retrieved and output directory is set.
      */
     val canTranslate: Boolean
-        get() = isFormValid && !isFetchingVideoInfo && !isCheckingConnectivity
+        get() = videoInfo != null && outputDirectory.isNotBlank()
 }
 
 /**
@@ -137,12 +138,12 @@ class MainViewModel(
         val settings = configManager.getSettings()
 
         state = state.copy(
-            sourceLanguage = settings.translation.defaultSourceLanguage?.let { Language.fromCode(it) },
+            sourceLanguage = settings.translation.defaultSourceLanguage?.let { Language.fromCode(it) } ?: Language.ENGLISH,
             targetLanguage = Language.fromCode(settings.translation.defaultTargetLanguage) ?: Language.ENGLISH,
             subtitleType = when (settings.subtitle.defaultOutputMode) {
                 "soft" -> SubtitleType.SOFT
                 "hard", "burned_in" -> SubtitleType.BURNED_IN
-                else -> SubtitleType.SOFT
+                else -> SubtitleType.BURNED_IN
             },
             burnedInStyle = BurnedInSubtitleStyle(
                 fontSize = settings.subtitle.burnedIn.fontSize,

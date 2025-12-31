@@ -16,6 +16,8 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ericjesse.videotranslator.ui.theme.AppColors
@@ -91,7 +93,9 @@ fun AppButton(
 
             Button(
                 onClick = onClick,
-                modifier = modifier.height(height),
+                modifier = modifier
+                    .height(height)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 shape = shape,
                 colors = ButtonDefaults.buttonColors(
@@ -138,7 +142,9 @@ fun AppButton(
 
             OutlinedButton(
                 onClick = onClick,
-                modifier = modifier.height(height),
+                modifier = modifier
+                    .height(height)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 shape = shape,
                 border = BorderStroke(1.dp, borderColor),
@@ -174,7 +180,9 @@ fun AppButton(
 
             TextButton(
                 onClick = onClick,
-                modifier = modifier.height(height),
+                modifier = modifier
+                    .height(height)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 shape = shape,
                 colors = ButtonDefaults.textButtonColors(
@@ -209,7 +217,9 @@ fun AppButton(
 
             Button(
                 onClick = onClick,
-                modifier = modifier.height(height),
+                modifier = modifier
+                    .height(height)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 shape = shape,
                 colors = ButtonDefaults.buttonColors(
@@ -333,7 +343,9 @@ fun AppIconButton(
 
             FilledIconButton(
                 onClick = onClick,
-                modifier = modifier.size(buttonSize),
+                modifier = modifier
+                    .size(buttonSize)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 shape = shape,
                 colors = IconButtonDefaults.filledIconButtonColors(
@@ -377,7 +389,9 @@ fun AppIconButton(
 
             OutlinedIconButton(
                 onClick = onClick,
-                modifier = modifier.size(buttonSize),
+                modifier = modifier
+                    .size(buttonSize)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 shape = shape,
                 border = BorderStroke(1.dp, borderColor),
@@ -410,7 +424,9 @@ fun AppIconButton(
 
             IconButton(
                 onClick = onClick,
-                modifier = modifier.size(buttonSize),
+                modifier = modifier
+                    .size(buttonSize)
+                    .pointerHoverIcon(if (isClickable) PointerIcon.Hand else PointerIcon.Default),
                 enabled = isClickable,
                 colors = IconButtonDefaults.iconButtonColors(
                     contentColor = contentColor,

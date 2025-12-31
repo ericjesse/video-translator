@@ -1,8 +1,12 @@
 package com.ericjesse.videotranslator.domain.model
 
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
-import kotlin.test.*
 
 class WhisperModelsTest {
 
@@ -123,7 +127,7 @@ class WhisperModelsTest {
             assertEquals(5, options.bestOf)
             assertEquals(0f, options.temperature)
             assertNull(options.prompt)
-            assertTrue(options.splitOnWord)
+            assertFalse(options.splitOnWord)  // Disabled by default - can cause inaccurate transcription
             assertEquals(-1, options.maxContext)
         }
 

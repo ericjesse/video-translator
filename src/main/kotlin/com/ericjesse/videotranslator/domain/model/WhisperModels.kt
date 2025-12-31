@@ -71,6 +71,11 @@ enum class WhisperModel(
  * @property prompt Initial prompt to guide transcription style.
  * @property splitOnWord Split on word boundaries when segmenting.
  * @property maxContext Maximum context for decoding (tokens, -1 = default).
+ * @property useVad Enable Voice Activity Detection for more accurate timestamps.
+ * @property vadThreshold VAD threshold for speech detection (0.0-1.0, default 0.5).
+ * @property vadMinSpeechDurationMs Minimum speech duration in ms (default 250).
+ * @property vadMinSilenceDurationMs Minimum silence duration to split segments in ms (default 100).
+ * @property vadSpeechPadMs Speech padding to extend segments in ms (default 30).
  */
 @Serializable
 data class WhisperOptions(
@@ -85,8 +90,13 @@ data class WhisperOptions(
     val bestOf: Int = 5,
     val temperature: Float = 0f,
     val prompt: String? = null,
-    val splitOnWord: Boolean = true,
-    val maxContext: Int = -1
+    val splitOnWord: Boolean = false,  // Can cause inaccurate transcription when enabled
+    val maxContext: Int = -1,
+    val useVad: Boolean = false,  // Requires separate Silero VAD model
+    val vadThreshold: Float = 0.5f,
+    val vadMinSpeechDurationMs: Int = 250,
+    val vadMinSilenceDurationMs: Int = 100,
+    val vadSpeechPadMs: Int = 30
 )
 
 /**

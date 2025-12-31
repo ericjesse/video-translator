@@ -8,6 +8,7 @@ import com.ericjesse.videotranslator.infrastructure.process.CancellationToken
 import com.ericjesse.videotranslator.infrastructure.process.ProcessConfig
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.json.Json
@@ -37,20 +38,22 @@ private val logger = KotlinLogging.logger {}
 class TranscriberService(
     private val processExecutor: ProcessExecutor,
     private val platformPaths: PlatformPaths,
-    private val configManager: ConfigManager
+    private val configManager: ConfigManager,
+    private val tempFileManager: TempFileManager? = null,
+    private val subtitleDeduplicator: SubtitleDeduplicator = SubtitleDeduplicator()
 ) {
 
     private var lastResult: WhisperResult? = null
-    private val tempFiles = mutableListOf<File>()
+    private var currentOperationId: String? = null
 
     private val whisperPath: String
-        get() = platformPaths.getBinaryPath("whisper")
+        get() = configManager.getBinaryPath("whisper")
 
     private val ffmpegPath: String
-        get() = platformPaths.getBinaryPath("ffmpeg")
+        get() = configManager.getBinaryPath("ffmpeg")
 
     private val ffprobePath: String
-        get() = platformPaths.getBinaryPath("ffprobe")
+        get() = configManager.getBinaryPath("ffprobe")
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -179,15 +182,19 @@ class TranscriberService(
                 processingTime = processingTime
             )
 
-            // Step 5: Cleanup
-            send(StageProgress(EXTRACTION_PROGRESS_WEIGHT + TRANSCRIPTION_PROGRESS_WEIGHT, "Cleaning up..."))
-            cleanupTempFiles()
+            // Step 5: Finalize (files kept in cache until app shutdown)
+            send(StageProgress(EXTRACTION_PROGRESS_WEIGHT + TRANSCRIPTION_PROGRESS_WEIGHT, "Finalizing..."))
 
             send(StageProgress(1f, "Transcription complete"))
             logger.info { "Transcription completed in ${processingTime}ms" }
 
         } catch (e: Exception) {
-            cleanupTempFiles()
+            logger.error(e) { "Transcription failed: ${e.message}" }
+            logger.error { "Transcription error details - Input: $inputPath, Options: $options" }
+            if (e is WhisperException) {
+                logger.error { "Whisper error type: ${e.errorType}, Technical: ${e.technicalMessage}" }
+            }
+            // Files kept in cache for debugging, will be cleaned up on app shutdown
             throw e
         }
     }
@@ -305,6 +312,9 @@ class TranscriberService(
 
     /**
      * Prepares audio for transcription (extracts from video or converts format).
+     * Uses a two-step process:
+     * 1. Extract audio from video to MP3 (intermediate format)
+     * 2. Convert MP3 to WAV (16kHz mono for Whisper)
      */
     private suspend fun prepareAudio(
         inputPath: String,
@@ -321,34 +331,84 @@ class TranscriberService(
 
         // Create temp directory for audio files
         val tempDir = File(platformPaths.cacheDir, "transcription").also { it.mkdirs() }
-        val outputPath = File(tempDir, "${inputFile.nameWithoutExtension}_audio.wav")
-        tempFiles.add(outputPath)
 
-        // Extract/convert audio using FFmpeg
-        val command = listOf(
+        // Step 1: Extract audio from video to MP3 (intermediate format)
+        val mp3Path = File(tempDir, "${inputFile.nameWithoutExtension}_audio.mp3")
+        trackTempFile(mp3Path, "intermediate MP3 audio")
+
+        val mp3Command = listOf(
             ffmpegPath,
             "-i", inputPath,
+            "-c:a", "libmp3lame",       // MP3 codec
+            "-ac", "2",                 // Stereo
+            "-q:a", "2",                // Quality (0-9, lower is better)
+            "-y",                       // Overwrite
+            mp3Path.absolutePath
+        )
+
+        println("=== FFmpeg: Extracting audio to MP3 ===")
+        println("Command: ${mp3Command.joinToString(" ")}")
+        logger.info { "Extracting audio to MP3: ${mp3Command.joinToString(" ")}" }
+
+        try {
+            processExecutor.execute(mp3Command, ProcessConfig(), cancellationToken) { line ->
+                println("[FFmpeg] $line")
+                logger.debug { "[FFmpeg MP3] $line" }
+            }
+            println("=== MP3 extraction complete: ${mp3Path.absolutePath} ===")
+            logger.info { "MP3 extraction complete: ${mp3Path.absolutePath}" }
+        } catch (e: ProcessException) {
+            println("=== FFmpeg MP3 extraction FAILED ===")
+            println("Exit code: ${e.exitCode}")
+            println("Error: ${e.message}")
+            logger.error { "MP3 extraction failed with exit code ${e.exitCode}" }
+            logger.error { "FFmpeg command: ${mp3Command.joinToString(" ")}" }
+            logger.error { "FFmpeg error output: ${e.message}" }
+            throw WhisperException.fromOutput(e.message ?: "", e.exitCode)
+        }
+
+        // Step 2: Convert MP3 to WAV (16kHz mono for Whisper)
+        val wavPath = File(tempDir, "${inputFile.nameWithoutExtension}_audio.wav")
+        trackTempFile(wavPath, "WAV audio for Whisper")
+
+        val wavCommand = listOf(
+            ffmpegPath,
+            "-i", mp3Path.absolutePath,
             "-vn",                      // No video
             "-acodec", "pcm_s16le",     // PCM 16-bit
             "-ar", WHISPER_SAMPLE_RATE.toString(),
             "-ac", "1",                 // Mono
             "-y",                       // Overwrite
-            outputPath.absolutePath
+            wavPath.absolutePath
         )
 
-        logger.debug { "Extracting audio: ${command.joinToString(" ")}" }
+        println("=== FFmpeg: Converting MP3 to WAV (16kHz mono) ===")
+        println("Command: ${wavCommand.joinToString(" ")}")
+        logger.info { "Converting MP3 to WAV: ${wavCommand.joinToString(" ")}" }
 
         try {
-            processExecutor.execute(command, ProcessConfig(), cancellationToken)
+            processExecutor.execute(wavCommand, ProcessConfig(), cancellationToken) { line ->
+                println("[FFmpeg] $line")
+                logger.debug { "[FFmpeg WAV] $line" }
+            }
+            println("=== WAV conversion complete: ${wavPath.absolutePath} ===")
+            logger.info { "WAV conversion complete: ${wavPath.absolutePath}" }
         } catch (e: ProcessException) {
+            println("=== FFmpeg WAV conversion FAILED ===")
+            println("Exit code: ${e.exitCode}")
+            println("Error: ${e.message}")
+            logger.error { "WAV conversion failed with exit code ${e.exitCode}" }
+            logger.error { "FFmpeg command: ${wavCommand.joinToString(" ")}" }
+            logger.error { "FFmpeg error output: ${e.message}" }
             throw WhisperException.fromOutput(e.message ?: "", e.exitCode)
         }
 
         // Get audio duration
-        val duration = getAudioDuration(outputPath.absolutePath)
+        val duration = getAudioDuration(wavPath.absolutePath)
+        println("=== Audio prepared: duration=${duration}ms ===")
 
         return AudioInfo(
-            path = outputPath.absolutePath,
+            path = wavPath.absolutePath,
             duration = duration,
             sampleRate = WHISPER_SAMPLE_RATE,
             channels = 1,
@@ -396,7 +456,7 @@ class TranscriberService(
             val segmentDuration = segmentEnd - currentStart
 
             val segmentFile = File(tempDir, "segment_${index}.wav")
-            tempFiles.add(segmentFile)
+            trackTempFile(segmentFile, "audio segment $index")
 
             // Extract segment using FFmpeg
             val command = listOf(
@@ -414,6 +474,9 @@ class TranscriberService(
             try {
                 processExecutor.execute(command, ProcessConfig(), cancellationToken)
             } catch (e: ProcessException) {
+                logger.error { "Audio segmentation failed for segment $index" }
+                logger.error { "Segment range: ${currentStart}ms - ${segmentEnd}ms" }
+                logger.error { "FFmpeg error: ${e.message}" }
                 throw WhisperException.fromOutput(e.message ?: "", e.exitCode)
             }
 
@@ -451,19 +514,31 @@ class TranscriberService(
         val modelPath = getModelPathFromSettings(options.model)
         val outputPath = File(segment.path).parentFile.resolve("output_${segment.index}")
         val jsonOutputPath = File("${outputPath.absolutePath}.json")
-        tempFiles.add(jsonOutputPath)
-        tempFiles.add(File("${outputPath.absolutePath}.srt"))
-        tempFiles.add(File("${outputPath.absolutePath}.txt"))
+        trackTempFile(jsonOutputPath, "Whisper JSON output")
+        trackTempFile(File("${outputPath.absolutePath}.srt"), "Whisper SRT output")
+        trackTempFile(File("${outputPath.absolutePath}.txt"), "Whisper TXT output")
 
         val command = buildWhisperCommand(segment.path, modelPath, outputPath.absolutePath, options)
-        logger.debug { "Running Whisper: ${command.joinToString(" ")}" }
+
+        // Print whisper command to console for debugging
+        println("=== Whisper: Starting transcription for segment ${segment.index} ===")
+        println("Command: ${command.joinToString(" ")}")
+        println("Model: $modelPath")
+        println("Audio: ${segment.path}")
+        println("Duration: ${segment.duration}ms")
+        logger.info { "Running Whisper: ${command.joinToString(" ")}" }
 
         var detectedLanguage = options.language ?: "en"
         var lastProgressTime = 0L
         val errors = StringBuilder()
+        val allOutput = StringBuilder()
 
         try {
             processExecutor.execute(command, ProcessConfig(timeoutMinutes = 120), cancellationToken) { line ->
+                // Print all whisper output to console for debugging
+                println("[Whisper] $line")
+                allOutput.appendLine(line)
+
                 // Parse progress
                 val progress = parseWhisperProgress(line, segment.duration, totalDuration)
                 if (progress != null) {
@@ -477,6 +552,7 @@ class TranscriberService(
                     line.contains("detected language:", ignoreCase = true)
                 ) {
                     detectedLanguage = extractLanguageCode(line)
+                    println("[Whisper] Detected language: $detectedLanguage")
                     logger.info { "Detected language: $detectedLanguage" }
                 }
 
@@ -487,13 +563,33 @@ class TranscriberService(
                     errors.appendLine(line)
                 }
             }
+            println("=== Whisper: Transcription complete for segment ${segment.index} ===")
+            logger.info { "Whisper transcription complete for segment ${segment.index}" }
         } catch (e: ProcessException) {
             val errorOutput = errors.toString().ifBlank { e.message ?: "" }
+            println("=== Whisper: Transcription FAILED for segment ${segment.index} ===")
+            println("Exit code: ${e.exitCode}")
+            println("Error output: $errorOutput")
+            println("Full output:\n$allOutput")
+            logger.error { "Whisper transcription failed for segment ${segment.index}" }
+            logger.error { "Whisper command: ${command.joinToString(" ")}" }
+            logger.error { "Exit code: ${e.exitCode}" }
+            logger.error { "Whisper error output: $errorOutput" }
+            logger.error { "Model path: $modelPath" }
+            logger.error { "Audio path: ${segment.path}" }
             throw WhisperException.fromOutput(errorOutput, e.exitCode)
         }
 
         // Parse output
+        println("=== Parsing Whisper output ===")
         val segments = parseWhisperOutput(outputPath.absolutePath, options.wordTimestamps)
+        println("=== Parsed ${segments.size} segments ===")
+        segments.take(3).forEachIndexed { i, seg ->
+            println("  Segment $i: [${seg.startTime}ms - ${seg.endTime}ms] ${seg.text.take(50)}...")
+        }
+        if (segments.size > 3) {
+            println("  ... and ${segments.size - 3} more segments")
+        }
 
         return WhisperResult(
             segments = segments,
@@ -514,7 +610,7 @@ class TranscriberService(
     ): List<String> = buildList {
         add(whisperPath)
         add("--model"); add(modelPath)
-        add("--output-json")
+        add("--output-json-full")  // Use full JSON for detailed timestamps
         add("--output-srt")
         add("--output-file"); add(outputPath)
 
@@ -528,16 +624,26 @@ class TranscriberService(
             add("--translate")
         }
 
-        // Word-level timestamps
+        // Segment length control for better timestamp accuracy
         if (options.wordTimestamps) {
             add("--max-len"); add("0")  // Disable max length for word timestamps
-            // Note: whisper.cpp uses different flags than OpenAI whisper
-            // Check if the binary supports word timestamps
+        } else if (options.maxSegmentLength > 0) {
+            add("--max-len"); add(options.maxSegmentLength.toString())
+        }
+        // Note: removed default --max-len as it didn't improve timestamps
+
+        // Enable token-level timestamps using DTW for more accurate timing
+        // This aligns text with audio more precisely than default segmentation
+        add("--dtw"); add(options.model)
+
+        // Split on word boundaries (can cause issues, disabled by default)
+        if (options.splitOnWord) {
+            add("--split-on-word")
         }
 
-        // GPU acceleration
-        if (options.useGpu) {
-            add("--gpu"); add("0")  // Use first GPU
+        // GPU acceleration (enabled by default in whisper-cpp, use --no-gpu to disable)
+        if (!options.useGpu) {
+            add("--no-gpu")
         }
 
         // Threading
@@ -562,6 +668,15 @@ class TranscriberService(
         // Prompt
         options.prompt?.let {
             add("--prompt"); add(it)
+        }
+
+        // Voice Activity Detection (VAD) for more accurate timestamps
+        if (options.useVad) {
+            add("--vad")
+            add("--vad-threshold"); add(options.vadThreshold.toString())
+            add("--vad-min-speech-duration-ms"); add(options.vadMinSpeechDurationMs.toString())
+            add("--vad-min-silence-duration-ms"); add(options.vadMinSilenceDurationMs.toString())
+            add("--vad-speech-pad-ms"); add(options.vadSpeechPadMs.toString())
         }
 
         // Progress output
@@ -684,6 +799,10 @@ class TranscriberService(
             return parseSrtOutput(srtFile)
         }
 
+        logger.error { "Whisper did not produce output files" }
+        logger.error { "Expected JSON file: $jsonFile (exists: ${jsonFile.exists()})" }
+        logger.error { "Expected SRT file: $srtFile (exists: ${srtFile.exists()})" }
+        logger.error { "Output directory contents: ${jsonFile.parentFile?.listFiles()?.map { it.name }}" }
         throw WhisperException(
             WhisperErrorType.UNKNOWN,
             "Whisper did not produce output files",
@@ -804,18 +923,20 @@ class TranscriberService(
     }
 
     /**
-     * Merges overlapping segments from segmented audio.
+     * Merges overlapping segments and removes duplicate text.
+     * Handles both time-based overlaps and text-based repetition (common Whisper issue).
      */
     private fun mergeOverlappingSegments(segments: List<WhisperSegment>): List<WhisperSegment> {
         if (segments.isEmpty()) return segments
 
-        val merged = mutableListOf<WhisperSegment>()
+        // First pass: merge time-based overlaps
+        val timeMerged = mutableListOf<WhisperSegment>()
         var current = segments.first()
 
         for (i in 1 until segments.size) {
             val next = segments[i]
 
-            // Check for overlap
+            // Check for time overlap
             if (next.startTime < current.endTime) {
                 // Merge by extending current segment
                 current = current.copy(
@@ -828,13 +949,29 @@ class TranscriberService(
                     }
                 )
             } else {
-                merged.add(current)
+                timeMerged.add(current)
                 current = next
             }
         }
+        timeMerged.add(current)
 
-        merged.add(current)
-        return merged
+        // Note: Text-based deduplication was removed as it was too aggressive
+        // for Whisper output and caused inaccurate transcriptions.
+        // The time-based overlap merging above is sufficient.
+        return timeMerged
+    }
+
+    /**
+     * Removes overlapping/repeated text between consecutive segments using the shared deduplicator.
+     */
+    private fun deduplicateSegmentText(segments: List<WhisperSegment>): List<WhisperSegment> {
+        val result = subtitleDeduplicator.deduplicate(
+            entries = segments,
+            toTimedText = { SubtitleDeduplicator.TimedText(it.startTime, it.endTime, it.text) },
+            updateText = { segment, newText -> segment.copy(text = newText) },
+            reindex = { segment, _ -> segment } // WhisperSegment doesn't have an index field
+        )
+        return result.entries
     }
 
     /**
@@ -853,20 +990,20 @@ class TranscriberService(
     }
 
     /**
-     * Cleans up temporary files.
+     * Tracks a temporary file for cleanup on app shutdown.
+     * Files are kept in cache during the session for debugging/inspection.
      */
-    private fun cleanupTempFiles() {
-        for (file in tempFiles) {
-            try {
-                if (file.exists()) {
-                    file.delete()
-                    logger.debug { "Deleted temp file: ${file.absolutePath}" }
-                }
-            } catch (e: Exception) {
-                logger.warn { "Failed to delete temp file: ${file.absolutePath}" }
-            }
-        }
-        tempFiles.clear()
+    private fun trackTempFile(file: File, description: String = "") {
+        val operationId = currentOperationId ?: "transcription-${System.currentTimeMillis()}"
+        tempFileManager?.trackFile(file.toPath(), operationId, false, description)
+        logger.debug { "Tracked temp file: ${file.name} ($description)" }
+    }
+
+    /**
+     * Sets the current operation ID for temp file tracking.
+     */
+    fun setOperationId(operationId: String) {
+        currentOperationId = operationId
     }
 }
 

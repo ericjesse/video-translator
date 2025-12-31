@@ -234,6 +234,8 @@ class ProgressViewModel(
                     }
                     .collect { pipelineStage ->
                         mapPipelineStageToState(pipelineStage)
+                        // Collect logs from orchestrator on each stage update
+                        collectOrchestratorLogs()
                     }
 
             } catch (e: CancellationException) {
@@ -381,11 +383,11 @@ class ProgressViewModel(
         val stageIndex = state.stages.indexOfFirst { it.pipelineStage == pipelineStage }
         if (stageIndex < 0) return
 
-        // Mark all previous stages as complete if they're still pending
+        // Mark all previous stages as complete if they're still pending or in progress
         val updatedStages = state.stages.mapIndexed { index, stageState ->
             when {
-                index < stageIndex && stageState.status == StageStatus.Pending -> {
-                    stageState.copy(status = StageStatus.Complete)
+                index < stageIndex && (stageState.status == StageStatus.Pending || stageState.status == StageStatus.InProgress) -> {
+                    stageState.copy(status = StageStatus.Complete, progress = 1f)
                 }
                 index == stageIndex -> {
                     stageState.copy(
@@ -500,7 +502,14 @@ class ProgressViewModel(
             error = error
         )
 
+        // Log detailed error info
+        logger.error { "[${pipelineStageName?.displayName ?: "Pipeline"}] Error: $errorMessage" }
+        suggestion?.let { logger.error { "Suggestion: $it" } }
+        logger.error { "Error code: ${error.code}" }
+        error.technicalDetails?.let { logger.error { "Technical details: $it" } }
+
         addLog(LogEntryLevel.ERROR, pipelineStageName, "Error: $errorMessage")
+        suggestion?.let { addLog(LogEntryLevel.INFO, pipelineStageName, "Suggestion: $it") }
     }
 
     /**
@@ -509,11 +518,23 @@ class ProgressViewModel(
     private fun handlePipelineError(exception: Throwable) {
         val currentStage = state.currentStage?.pipelineStage ?: PipelineStageName.DOWNLOAD
 
+        // Log detailed error information
+        logger.error(exception) { "Pipeline error occurred during ${currentStage.displayName}" }
+        logger.error { "Error type: ${exception::class.simpleName}" }
+        logger.error { "Error message: ${exception.message}" }
+        logger.error { "Video: ${job.videoInfo.title} (${job.videoInfo.id})" }
+        logger.error { "Video URL: ${job.videoInfo.url}" }
+
         val error = if (exception is PipelineException) {
+            logger.error { "Pipeline error code: ${exception.error.code}" }
+            logger.error { "Technical details: ${exception.error.technicalDetails}" }
             exception.error
         } else {
             ErrorMapper.mapException(exception as Exception, currentStage)
         }
+
+        // Log the full stack trace at debug level
+        logger.debug { "Full stack trace:\n${exception.stackTraceToString()}" }
 
         handleError(
             stageName = error.stage.displayName,

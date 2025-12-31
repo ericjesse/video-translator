@@ -22,6 +22,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -189,6 +193,7 @@ fun ProgressScreen(
             onConfirm = {
                 showCancelConfirmation = false
                 viewModel.cancelTranslation()
+                onTranslateAnother()
             },
             onDismiss = { showCancelConfirmation = false }
         )
@@ -211,66 +216,79 @@ fun ProgressScreen(
             showErrorIcon = state.status == ProgressStatus.Error
         )
 
-        // Scrollable content
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Video Info Card
-            VideoInfoCard(
-                videoInfo = state.videoInfo,
-                i18n = i18n
-            )
+        // Scrollable content with scrollbar
+        val scrollState = rememberScrollState()
+        Box(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .padding(end = 12.dp), // Extra padding for scrollbar
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Video Info Card
+                VideoInfoCard(
+                    videoInfo = state.videoInfo,
+                    i18n = i18n
+                )
 
-            // Main content based on state
-            when (state.status) {
-                ProgressStatus.Processing, ProgressStatus.Cancelled -> {
-                    // Pipeline Progress Card
-                    PipelineProgressCardFromState(
-                        stages = state.stages,
-                        i18n = i18n
-                    )
+                // Main content based on state
+                when (state.status) {
+                    ProgressStatus.Processing, ProgressStatus.Cancelled -> {
+                        // Pipeline Progress Card
+                        PipelineProgressCardFromState(
+                            stages = state.stages,
+                            i18n = i18n
+                        )
 
-                    // Overall progress
-                    OverallProgressBar(
-                        progress = state.overallProgress,
-                        i18n = i18n
-                    )
+                        // Overall progress
+                        OverallProgressBar(
+                            progress = state.overallProgress,
+                            i18n = i18n
+                        )
+                    }
+
+                    ProgressStatus.Complete -> {
+                        // Success Card - build output files from result
+                        val outputFiles = buildOutputFilesFromResult(state, viewModel.job)
+                        SuccessCard(
+                            outputFiles = outputFiles,
+                            outputDirectory = viewModel.job.outputOptions.outputDirectory,
+                            processingTime = state.result?.duration ?: 0L,
+                            i18n = i18n,
+                            onOpenFolder = { viewModel.openOutputFolder() }
+                        )
+                    }
+
+                    ProgressStatus.Error -> {
+                        // Error Card
+                        val error = state.error
+                        val failedStage = state.stages.find { it.status == StageStatus.Error }
+                        ErrorCardFromState(
+                            failedStage = failedStage?.pipelineStage ?: PipelineStageName.DOWNLOAD,
+                            error = error,
+                            i18n = i18n
+                        )
+                    }
                 }
 
-                ProgressStatus.Complete -> {
-                    // Success Card - build output files from result
-                    val outputFiles = buildOutputFilesFromResult(state, viewModel.job)
-                    SuccessCard(
-                        outputFiles = outputFiles,
-                        outputDirectory = viewModel.job.outputOptions.outputDirectory,
-                        processingTime = state.result?.duration ?: 0L,
-                        i18n = i18n,
-                        onOpenFolder = { viewModel.openOutputFolder() }
-                    )
-                }
-
-                ProgressStatus.Error -> {
-                    // Error Card
-                    val error = state.error
-                    val failedStage = state.stages.find { it.status == StageStatus.Error }
-                    ErrorCardFromState(
-                        failedStage = failedStage?.pipelineStage ?: PipelineStageName.DOWNLOAD,
-                        error = error,
-                        i18n = i18n
-                    )
-                }
+                // Collapsible Log Panel
+                LogPanelFromState(
+                    logs = state.logEntries,
+                    expanded = logsExpanded,
+                    onToggleExpanded = { logsExpanded = !logsExpanded },
+                    i18n = i18n
+                )
             }
 
-            // Collapsible Log Panel
-            LogPanelFromState(
-                logs = state.logEntries,
-                expanded = logsExpanded,
-                onToggleExpanded = { logsExpanded = !logsExpanded },
-                i18n = i18n
+            // Scrollbar
+            VerticalScrollbar(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+                adapter = rememberScrollbarAdapter(scrollState)
             )
         }
 
@@ -371,6 +389,7 @@ fun ProgressScreen(
             onConfirm = {
                 showCancelConfirmation = false
                 onCancel()
+                onTranslateAnother()
             },
             onDismiss = { showCancelConfirmation = false }
         )
@@ -392,65 +411,78 @@ fun ProgressScreen(
             showErrorIcon = progressState is ProgressState.Error
         )
 
-        // Scrollable content
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Video Info Card
-            VideoInfoCard(
-                videoInfo = job.videoInfo,
-                i18n = i18n
-            )
+        // Scrollable content with scrollbar
+        val scrollState2 = rememberScrollState()
+        Box(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState2)
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .padding(end = 12.dp), // Extra padding for scrollbar
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Video Info Card
+                VideoInfoCard(
+                    videoInfo = job.videoInfo,
+                    i18n = i18n
+                )
 
-            // Main content based on state
-            when (progressState) {
-                is ProgressState.Processing -> {
-                    // Pipeline Progress Card
-                    PipelineProgressCard(
-                        stages = progressState.stages,
-                        i18n = i18n
-                    )
+                // Main content based on state
+                when (progressState) {
+                    is ProgressState.Processing -> {
+                        // Pipeline Progress Card
+                        PipelineProgressCard(
+                            stages = progressState.stages,
+                            i18n = i18n
+                        )
 
-                    // Overall progress
-                    OverallProgressBar(
-                        progress = progressState.overallProgress,
-                        i18n = i18n
-                    )
+                        // Overall progress
+                        OverallProgressBar(
+                            progress = progressState.overallProgress,
+                            i18n = i18n
+                        )
+                    }
+
+                    is ProgressState.Complete -> {
+                        // Success Card
+                        SuccessCard(
+                            outputFiles = progressState.outputFiles,
+                            outputDirectory = progressState.outputDirectory,
+                            processingTime = progressState.processingTime,
+                            i18n = i18n,
+                            onOpenFolder = { onOpenFolder(progressState.outputDirectory) }
+                        )
+                    }
+
+                    is ProgressState.Error -> {
+                        // Error Card
+                        ErrorCard(
+                            failedStage = progressState.failedStage,
+                            errorMessage = progressState.errorMessage,
+                            errorDetails = progressState.errorDetails,
+                            suggestions = progressState.suggestions,
+                            i18n = i18n
+                        )
+                    }
                 }
 
-                is ProgressState.Complete -> {
-                    // Success Card
-                    SuccessCard(
-                        outputFiles = progressState.outputFiles,
-                        outputDirectory = progressState.outputDirectory,
-                        processingTime = progressState.processingTime,
-                        i18n = i18n,
-                        onOpenFolder = { onOpenFolder(progressState.outputDirectory) }
-                    )
-                }
-
-                is ProgressState.Error -> {
-                    // Error Card
-                    ErrorCard(
-                        failedStage = progressState.failedStage,
-                        errorMessage = progressState.errorMessage,
-                        errorDetails = progressState.errorDetails,
-                        suggestions = progressState.suggestions,
-                        i18n = i18n
-                    )
-                }
+                // Collapsible Log Panel
+                LogPanel(
+                    logs = logs,
+                    expanded = logsExpanded,
+                    onToggleExpanded = { logsExpanded = !logsExpanded },
+                    i18n = i18n
+                )
             }
 
-            // Collapsible Log Panel
-            LogPanel(
-                logs = logs,
-                expanded = logsExpanded,
-                onToggleExpanded = { logsExpanded = !logsExpanded },
-                i18n = i18n
+            // Scrollbar
+            VerticalScrollbar(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+                adapter = rememberScrollbarAdapter(scrollState2)
             )
         }
 
@@ -1559,6 +1591,18 @@ private fun LogPanelFromState(
     i18n: I18nManager,
     modifier: Modifier = Modifier
 ) {
+    val clipboardManager = LocalClipboardManager.current
+    var showCopiedToast by remember { mutableStateOf(false) }
+    val timeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm:ss") }
+
+    // Hide copied toast after delay
+    LaunchedEffect(showCopiedToast) {
+        if (showCopiedToast) {
+            delay(2000)
+            showCopiedToast = false
+        }
+    }
+
     AppCard(
         modifier = modifier.fillMaxWidth(),
         elevation = AppCardElevation.Low
@@ -1584,6 +1628,29 @@ private fun LogPanelFromState(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Copy button
+                    IconButton(
+                        onClick = {
+                            val text = logs.joinToString("\n") { entry ->
+                                val time = entry.timestamp.format(timeFormatter)
+                                val level = "[${entry.level.name}]"
+                                "[$time] $level ${entry.message}"
+                            }
+                            clipboardManager.setText(AnnotatedString(text))
+                            showCopiedToast = true
+                        },
+                        modifier = Modifier
+                            .size(28.dp)
+                            .pointerHoverIcon(PointerIcon.Hand)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = i18n["action.copy"],
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
                     Text(
                         text = if (expanded) i18n["action.hide"] else i18n["action.show"],
                         style = MaterialTheme.typography.labelMedium,
@@ -1608,7 +1675,31 @@ private fun LogPanelFromState(
                 Column {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
 
-                    LogContentFromState(logs = logs)
+                    Box {
+                        LogContentFromState(logs = logs)
+
+                        // Copied toast
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = showCopiedToast,
+                            enter = fadeIn() + slideInVertically(),
+                            exit = fadeOut() + slideOutVertically(),
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 8.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.inverseSurface
+                            ) {
+                                Text(
+                                    text = i18n["progress.log.copied"],
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

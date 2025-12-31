@@ -4,12 +4,10 @@ package com.ericjesse.videotranslator.ui.screens.setup.steps
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
@@ -51,25 +49,6 @@ enum class TranslationServiceType(val id: String) {
     }
 }
 
-/**
- * LibreTranslate instance options.
- */
-enum class LibreTranslateInstance(
-    val url: String,
-    val displayName: String
-) {
-    LIBRETRANSLATE_COM("https://libretranslate.com", "libretranslate.com"),
-    LIBRETRANSLATE_DE("https://libretranslate.de", "libretranslate.de"),
-    CUSTOM("", "Custom...");
-
-    companion object {
-        fun fromUrl(url: String?): LibreTranslateInstance = when (url) {
-            "https://libretranslate.com" -> LIBRETRANSLATE_COM
-            "https://libretranslate.de" -> LIBRETRANSLATE_DE
-            else -> CUSTOM
-        }
-    }
-}
 
 /**
  * Connection test result.
@@ -107,6 +86,7 @@ fun TranslationServiceStep(
     val i18n = appModule.i18nManager
     val configManager = appModule.configManager
     val httpClient = appModule.httpClient
+    val libreTranslateService = appModule.libreTranslateService
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
     val uriHandler = LocalUriHandler.current
@@ -115,16 +95,6 @@ fun TranslationServiceStep(
     val existingConfig = remember { configManager.getTranslationServiceConfig() }
 
     // Service configuration state
-    var libreTranslateInstance by remember {
-        mutableStateOf(LibreTranslateInstance.fromUrl(existingConfig.libreTranslateUrl))
-    }
-    var customLibreTranslateUrl by remember {
-        mutableStateOf(
-            if (libreTranslateInstance == LibreTranslateInstance.CUSTOM)
-                existingConfig.libreTranslateUrl ?: ""
-            else ""
-        )
-    }
     var deeplApiKey by remember { mutableStateOf(existingConfig.deeplApiKey ?: "") }
     var openaiApiKey by remember { mutableStateOf(existingConfig.openaiApiKey ?: "") }
 
@@ -157,12 +127,6 @@ fun TranslationServiceStep(
         validationError = null
     }
 
-    // Get effective LibreTranslate URL
-    fun getLibreTranslateUrl(): String = when (libreTranslateInstance) {
-        LibreTranslateInstance.CUSTOM -> customLibreTranslateUrl
-        else -> libreTranslateInstance.url
-    }
-
     // Test connection function
     fun testConnection() {
         connectionTestResult = ConnectionTestResult.Testing
@@ -170,12 +134,8 @@ fun TranslationServiceStep(
             try {
                 when (TranslationServiceType.fromId(selectedService)) {
                     TranslationServiceType.LIBRE_TRANSLATE -> {
-                        val url = getLibreTranslateUrl()
-                        if (url.isBlank()) {
-                            connectionTestResult = ConnectionTestResult.Error("URL is required")
-                            return@launch
-                        }
-                        val response = httpClient.get("$url/languages")
+                        val serverUrl = libreTranslateService.serverUrl
+                        val response = httpClient.get("$serverUrl/languages")
                         if (response.status.isSuccess()) {
                             connectionTestResult = ConnectionTestResult.Success
                         } else {
@@ -236,11 +196,7 @@ fun TranslationServiceStep(
 
         when (TranslationServiceType.fromId(selectedService)) {
             TranslationServiceType.LIBRE_TRANSLATE -> {
-                val url = getLibreTranslateUrl()
-                if (url.isBlank()) {
-                    validationError = "Please enter a LibreTranslate URL"
-                    return
-                }
+                // Local server - no validation needed
             }
 
             TranslationServiceType.DEEPL -> {
@@ -260,7 +216,6 @@ fun TranslationServiceStep(
 
         // Save configuration
         val config = TranslationServiceConfig(
-            libreTranslateUrl = getLibreTranslateUrl().takeIf { it.isNotBlank() },
             deeplApiKey = deeplApiKey.takeIf { it.isNotBlank() },
             openaiApiKey = openaiApiKey.takeIf { it.isNotBlank() }
         )
@@ -269,16 +224,21 @@ fun TranslationServiceStep(
         onNext()
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .alpha(contentAlpha)
-            .verticalScroll(scrollState)
-            .padding(24.dp)
     ) {
-        // Description
-        Text(
-            text = i18n["setup.translation.description"],
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(24.dp)
+                .padding(end = 12.dp) // Extra padding for scrollbar
+        ) {
+            // Description
+            Text(
+                text = i18n["setup.translation.description"],
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -293,7 +253,7 @@ fun TranslationServiceStep(
             Column(
                 modifier = Modifier.padding(16.dp)
             ) {
-                // LibreTranslate
+                // LibreTranslate (Local)
                 ServiceOptionWithConfig(
                     name = i18n["service.libretranslate.name"],
                     description = i18n["service.libretranslate.description"],
@@ -302,14 +262,9 @@ fun TranslationServiceStep(
                     recommendedText = i18n["setup.translation.recommended"],
                     onSelect = { onServiceSelected(TranslationServiceType.LIBRE_TRANSLATE.id) }
                 ) {
-                    // LibreTranslate configuration
-                    LibreTranslateConfig(
-                        i18n = i18n,
-                        selectedInstance = libreTranslateInstance,
-                        customUrl = customLibreTranslateUrl,
-                        onInstanceSelected = { libreTranslateInstance = it },
-                        onCustomUrlChanged = { customLibreTranslateUrl = it },
-                        connectionTestResult = if (selectedService == TranslationServiceType.LIBRE_TRANSLATE.id)
+                    // LibreTranslate configuration - just test connection for local server
+                    ConnectionTestRow(
+                        result = if (selectedService == TranslationServiceType.LIBRE_TRANSLATE.id)
                             connectionTestResult else ConnectionTestResult.NotTested,
                         onTestConnection = { testConnection() }
                     )
@@ -394,7 +349,17 @@ fun TranslationServiceStep(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Scrollbar
+        VerticalScrollbar(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+            adapter = rememberScrollbarAdapter(scrollState)
+        )
     }
 }
 
@@ -475,108 +440,6 @@ private fun ServiceOptionWithConfig(
                 configContent()
             }
         }
-    }
-}
-
-@Composable
-private fun LibreTranslateConfig(
-    i18n: I18nManager,
-    selectedInstance: LibreTranslateInstance,
-    customUrl: String,
-    onInstanceSelected: (LibreTranslateInstance) -> Unit,
-    onCustomUrlChanged: (String) -> Unit,
-    connectionTestResult: ConnectionTestResult,
-    onTestConnection: () -> Unit
-) {
-    var instanceExpanded by remember { mutableStateOf(false) }
-
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Instance selector
-        Row(
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = i18n["service.libretranslate.instance"],
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            ExposedDropdownMenuBox(
-                expanded = instanceExpanded,
-                onExpandedChange = { instanceExpanded = !instanceExpanded }
-            ) {
-                OutlinedTextField(
-                    value = selectedInstance.displayName,
-                    onValueChange = {},
-                    readOnly = true,
-                    trailingIcon = {
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = instanceExpanded)
-                    },
-                    modifier = Modifier
-                        .menuAnchor()
-                        .width(220.dp),
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    shape = RoundedCornerShape(8.dp)
-                )
-
-                ExposedDropdownMenu(
-                    expanded = instanceExpanded,
-                    onDismissRequest = { instanceExpanded = false }
-                ) {
-                    LibreTranslateInstance.entries.forEach { instance ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = instance.displayName,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            },
-                            onClick = {
-                                onInstanceSelected(instance)
-                                instanceExpanded = false
-                            },
-                            leadingIcon = if (instance == selectedInstance) {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            } else null
-                        )
-                    }
-                }
-            }
-        }
-
-        // Custom URL field
-        AnimatedVisibility(
-            visible = selectedInstance == LibreTranslateInstance.CUSTOM,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            OutlinedTextField(
-                value = customUrl,
-                onValueChange = onCustomUrlChanged,
-                label = { Text("URL") },
-                placeholder = { Text("https://...") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                textStyle = MaterialTheme.typography.bodySmall
-            )
-        }
-
-        // Test connection
-        ConnectionTestRow(
-            result = connectionTestResult,
-            onTestConnection = onTestConnection
-        )
     }
 }
 

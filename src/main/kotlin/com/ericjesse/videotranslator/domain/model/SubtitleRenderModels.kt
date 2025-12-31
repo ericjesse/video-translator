@@ -421,24 +421,52 @@ object FfmpegProgressParser {
     /**
      * Parse FFmpeg progress output line.
      * Returns updated progress data or null if line doesn't contain progress info.
+     *
+     * Note: FFmpeg outputs progress in this order: out_time_us/out_time_ms, fps, bitrate, speed, progress
+     * So we calculate ETA when we receive the speed line, since by then we have both
+     * current time and current speed.
+     *
+     * FFmpeg versions may output either out_time_us (microseconds) or out_time_ms (milliseconds).
      */
     fun parseLine(line: String, totalDurationMs: Long, currentProgress: RenderProgress): RenderProgress? {
         return when {
-            line.startsWith("out_time_ms=") -> {
-                val currentMs = line.substringAfter("=").toLongOrNull() ?: return null
+            // Handle out_time_us (microseconds) - explicit microsecond format
+            line.startsWith("out_time_us=") -> {
+                val currentUs = line.substringAfter("=").toLongOrNull() ?: return null
+                val currentMs = currentUs / 1000
                 val percentage = if (totalDurationMs > 0) {
-                    (currentMs.toFloat() / 1000 / totalDurationMs).coerceIn(0f, 1f)
+                    (currentMs.toFloat() / totalDurationMs).coerceIn(0f, 1f)
                 } else 0f
-
-                val eta = if (currentProgress.speed > 0 && totalDurationMs > 0) {
-                    val remainingMs = totalDurationMs * 1000 - currentMs
-                    (remainingMs / 1000 / currentProgress.speed).toLong()
-                } else null
 
                 currentProgress.copy(
                     percentage = percentage,
-                    currentTime = currentMs / 1000,
-                    eta = eta
+                    currentTime = currentMs
+                )
+            }
+            // Handle out_time_ms - despite the name, FFmpeg outputs this in microseconds
+            line.startsWith("out_time_ms=") -> {
+                val currentUs = line.substringAfter("=").toLongOrNull() ?: return null
+                val currentMs = currentUs / 1000
+                val percentage = if (totalDurationMs > 0) {
+                    (currentMs.toFloat() / totalDurationMs).coerceIn(0f, 1f)
+                } else 0f
+
+                currentProgress.copy(
+                    percentage = percentage,
+                    currentTime = currentMs
+                )
+            }
+            // Handle timestamp format (HH:MM:SS.microseconds)
+            line.startsWith("out_time=") -> {
+                val timeStr = line.substringAfter("=").trim()
+                val currentMs = parseTimeToMs(timeStr) ?: return null
+                val percentage = if (totalDurationMs > 0) {
+                    (currentMs.toFloat() / totalDurationMs).coerceIn(0f, 1f)
+                } else 0f
+
+                currentProgress.copy(
+                    percentage = percentage,
+                    currentTime = currentMs
                 )
             }
             line.startsWith("fps=") -> {
@@ -453,7 +481,16 @@ object FfmpegProgressParser {
             line.startsWith("speed=") -> {
                 val speedStr = line.substringAfter("=").trim().removeSuffix("x")
                 val speed = speedStr.toFloatOrNull() ?: return null
-                currentProgress.copy(speed = speed)
+
+                // Calculate ETA now that we have both currentTime and speed
+                // currentTime and totalDurationMs are both in milliseconds
+                val eta = if (speed > 0 && totalDurationMs > 0 && currentProgress.currentTime > 0) {
+                    val remainingMs = totalDurationMs - currentProgress.currentTime
+                    val remainingSec = remainingMs / 1000
+                    (remainingSec / speed).toLong().coerceAtLeast(0)
+                } else null
+
+                currentProgress.copy(speed = speed, eta = eta)
             }
             line.startsWith("progress=") -> {
                 val status = line.substringAfter("=").trim()
@@ -475,6 +512,23 @@ object FfmpegProgressParser {
 
         val (h, m, s, cs) = match.destructured
         return (h.toLong() * 3600 + m.toLong() * 60 + s.toLong()) * 1000 + cs.toLong() * 10
+    }
+
+    /**
+     * Parse FFmpeg time format to milliseconds.
+     * Format: HH:MM:SS.microseconds (e.g., "00:01:30.500000")
+     */
+    private fun parseTimeToMs(timeStr: String): Long? {
+        // Format: HH:MM:SS.microseconds
+        val pattern = """(\d+):(\d+):(\d+)\.(\d+)""".toRegex()
+        val match = pattern.find(timeStr) ?: return null
+
+        val (h, m, s, us) = match.destructured
+        val baseMs = (h.toLong() * 3600 + m.toLong() * 60 + s.toLong()) * 1000
+        // Convert microseconds to milliseconds (first 3 digits)
+        val microStr = us.padEnd(6, '0').take(3)
+        val ms = microStr.toLongOrNull() ?: 0
+        return baseMs + ms
     }
 }
 

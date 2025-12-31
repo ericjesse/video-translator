@@ -4,7 +4,7 @@ package com.ericjesse.videotranslator.ui.screens.setup.steps
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,6 +18,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -101,9 +103,13 @@ fun WelcomeStep(
             }
         }
 
+        val scrollState = rememberScrollState()
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(24.dp)
+            modifier = Modifier
+                .verticalScroll(scrollState)
+                .padding(24.dp)
+                .padding(end = 12.dp) // Extra padding for scrollbar
         ) {
             // App icon with entrance animation
             AnimatedIconSection(
@@ -146,6 +152,15 @@ fun WelcomeStep(
                 onClick = onNext
             )
         }
+
+        // Scrollbar
+        VerticalScrollbar(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+            adapter = rememberScrollbarAdapter(scrollState)
+        )
     }
 }
 
@@ -334,8 +349,9 @@ private fun AnimatedLanguageSelector(
                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
                 },
                 modifier = Modifier
-                    .menuAnchor()
-                    .width(220.dp),
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .width(220.dp)
+                    .pointerHoverIcon(PointerIcon.Hand),
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,

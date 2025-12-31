@@ -169,8 +169,9 @@ class PipelineOrchestrator(
                 }
             }
 
-            // Stage 2: Check for existing captions
-            if (startStage.order <= PipelineStageName.CAPTION_CHECK.order) {
+            // Stage 2: Check for existing captions (if enabled in settings)
+            val preferYouTubeCaptions = configManager?.getSettings()?.transcription?.preferYouTubeCaptions ?: true
+            if (startStage.order <= PipelineStageName.CAPTION_CHECK.order && preferYouTubeCaptions) {
                 send(PipelineStage.CheckingCaptions("Checking for YouTube captions..."))
                 emitLog(PipelineLogEvent.StageTransition(
                     stage = PipelineStageName.CAPTION_CHECK,
@@ -201,6 +202,12 @@ class PipelineOrchestrator(
                     ))
                     saveCheckpoint(jobId, PipelineStageName.CAPTION_CHECK, downloadedVideoPath, subtitles, null, job)
                 }
+            } else if (!preferYouTubeCaptions) {
+                emitLog(PipelineLogEvent.Info(
+                    stage = PipelineStageName.CAPTION_CHECK,
+                    message = "YouTube captions disabled, using local transcription",
+                    details = mapOf("setting" to "preferYouTubeCaptions=false")
+                ))
             }
 
             // Stage 3: Transcribe audio (if no captions found and not resuming past this)
@@ -448,11 +455,12 @@ class PipelineOrchestrator(
 
         // 4. Check disk space before download
         diskSpaceChecker?.let { checker ->
-            val videoDuration = job.videoInfo.duration
+            // VideoInfo.duration is in milliseconds, convert to seconds
+            val videoDurationSeconds = job.videoInfo.duration / 1000
             val includeRender = job.outputOptions.subtitleType == SubtitleType.BURNED_IN
 
             val spaceCheck = checker.checkSpaceForTranslation(
-                videoDurationSeconds = videoDuration,
+                videoDurationSeconds = videoDurationSeconds,
                 includeDownload = true,
                 includeRender = includeRender
             )
@@ -606,6 +614,22 @@ class PipelineOrchestrator(
                 throw e
             } catch (e: Exception) {
                 lastError = ErrorMapper.mapException(e, stage)
+
+                // Log detailed error information for download failures
+                logger.error(e) { "Download attempt $attemptNumber failed" }
+                logger.error { "Error type: ${e::class.simpleName}" }
+                logger.error { "Error message: ${e.message}" }
+                logger.error { "Video URL: ${job.videoInfo.url}" }
+                logger.error { "Video ID: ${job.videoInfo.id}" }
+                logger.error { "Format attempted: ${format.displayName}" }
+
+                emitLog(PipelineLogEvent.Error(
+                    stage = stage,
+                    message = "Download attempt ${attemptNumber} failed: ${e.message}",
+                    error = lastError,
+                    stackTrace = e.stackTraceToString().take(1000)
+                ))
+
                 emitLog(PipelineLogEvent.Warning(
                     stage = stage,
                     message = "Download attempt ${attemptNumber} failed: ${e.message}",
@@ -698,6 +722,27 @@ class PipelineOrchestrator(
                 throw e
             } catch (e: Exception) {
                 lastError = ErrorMapper.mapException(e, stage)
+
+                // Log detailed error information for transcription failures
+                logger.error(e) { "Transcription attempt $attemptNumber failed" }
+                logger.error { "Error type: ${e::class.simpleName}" }
+                logger.error { "Error message: ${e.message}" }
+                logger.error { "Video path: $videoPath" }
+                logger.error { "Source language: ${job.sourceLanguage?.displayName ?: "auto-detect"}" }
+
+                // Log WhisperException-specific details
+                if (e is com.ericjesse.videotranslator.domain.model.WhisperException) {
+                    logger.error { "Whisper error type: ${e.errorType}" }
+                    logger.error { "Whisper technical details: ${e.technicalMessage}" }
+                }
+
+                emitLog(PipelineLogEvent.Error(
+                    stage = stage,
+                    message = "Transcription attempt ${attemptNumber} failed: ${e.message}",
+                    error = lastError,
+                    stackTrace = e.stackTraceToString().take(1000)
+                ))
+
                 emitLog(PipelineLogEvent.Warning(
                     stage = stage,
                     message = "Transcription attempt ${attemptNumber} failed: ${e.message}",
@@ -781,6 +826,22 @@ class PipelineOrchestrator(
                 throw e
             } catch (e: Exception) {
                 lastError = ErrorMapper.mapException(e, stage)
+
+                // Log detailed error information for translation failures
+                logger.error(e) { "Translation attempt $attempt failed" }
+                logger.error { "Error type: ${e::class.simpleName}" }
+                logger.error { "Error message: ${e.message}" }
+                logger.error { "Source language: ${subtitles.language.displayName}" }
+                logger.error { "Target language: ${job.targetLanguage.displayName}" }
+                logger.error { "Subtitle count: ${subtitles.entries.size}" }
+
+                emitLog(PipelineLogEvent.Error(
+                    stage = stage,
+                    message = "Translation attempt $attempt failed: ${e.message}",
+                    error = lastError,
+                    stackTrace = e.stackTraceToString().take(1000)
+                ))
+
                 emitLog(PipelineLogEvent.Warning(
                     stage = stage,
                     message = "Translation attempt $attempt failed: ${e.message}"
@@ -873,6 +934,24 @@ class PipelineOrchestrator(
                 throw e
             } catch (e: Exception) {
                 lastError = ErrorMapper.mapException(e, stage)
+
+                // Log detailed error information for render failures
+                logger.error(e) { "Render attempt $attemptNumber failed" }
+                logger.error { "Error type: ${e::class.simpleName}" }
+                logger.error { "Error message: ${e.message}" }
+                logger.error { "Video path: $videoPath" }
+                logger.error { "Subtitle count: ${subtitles.entries.size}" }
+                logger.error { "Output directory: ${job.outputOptions.outputDirectory}" }
+                logger.error { "Subtitle type: ${job.outputOptions.subtitleType}" }
+                encoder?.let { logger.error { "Encoder attempted: ${it.displayName}" } }
+
+                emitLog(PipelineLogEvent.Error(
+                    stage = stage,
+                    message = "Render attempt ${attemptNumber} failed: ${e.message}",
+                    error = lastError,
+                    stackTrace = e.stackTraceToString().take(1000)
+                ))
+
                 emitLog(PipelineLogEvent.Warning(
                     stage = stage,
                     message = "Render attempt ${attemptNumber} failed: ${e.message}",

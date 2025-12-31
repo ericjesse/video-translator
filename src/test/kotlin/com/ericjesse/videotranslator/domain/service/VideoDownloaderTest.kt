@@ -1,12 +1,31 @@
 package com.ericjesse.videotranslator.domain.service
 
-import com.ericjesse.videotranslator.domain.model.*
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.model.YtDlpDownloadOptions
+import com.ericjesse.videotranslator.domain.model.YtDlpErrorType
+import com.ericjesse.videotranslator.domain.model.YtDlpException
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.OperatingSystem
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
-import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
-import io.mockk.*
+import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.slot
+import java.io.File
+import java.nio.file.Path
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
@@ -14,9 +33,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import java.io.File
-import java.nio.file.Path
-import kotlin.test.*
 
 class VideoDownloaderTest {
 
@@ -25,20 +41,25 @@ class VideoDownloaderTest {
 
     private lateinit var processExecutor: ProcessExecutor
     private lateinit var platformPaths: PlatformPaths
+    private lateinit var configManager: ConfigManager
     private lateinit var downloader: VideoDownloader
 
     @BeforeEach
     fun setup() {
         processExecutor = mockk()
         platformPaths = mockk()
+        configManager = mockk()
 
         every { platformPaths.getBinaryPath("yt-dlp") } returns "/usr/local/bin/yt-dlp"
+        every { platformPaths.getBinaryPath("ffmpeg") } returns "/usr/local/bin/ffmpeg"
         every { platformPaths.cacheDir } returns tempDir.resolve("cache").toString().also {
             File(it).mkdirs()
         }
         every { platformPaths.operatingSystem } returns OperatingSystem.MACOS
+        every { configManager.getBinaryPath("yt-dlp") } returns "/usr/local/bin/yt-dlp"
+        every { configManager.getBinaryPath("ffmpeg") } returns "/usr/local/bin/ffmpeg"
 
-        downloader = VideoDownloader(processExecutor, platformPaths)
+        downloader = VideoDownloader(processExecutor, platformPaths, configManager)
     }
 
     @AfterEach

@@ -191,6 +191,8 @@ compose.desktop {
                 "java.base",
                 "java.desktop",
                 "java.logging",
+                "java.management",
+                "jdk.management",  // Contains com.sun.management.OperatingSystemMXBean
                 "java.naming",
                 "java.net.http",
                 "java.security.jgss",

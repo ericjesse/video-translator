@@ -2,9 +2,13 @@ package com.ericjesse.videotranslator.domain.service
 
 import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.infrastructure.config.*
+import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
+import com.ericjesse.videotranslator.infrastructure.translation.ServerStatus
 import io.ktor.client.*
 import io.ktor.client.engine.mock.*
+import io.ktor.client.request.*
 import io.ktor.http.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
@@ -16,6 +20,7 @@ import kotlin.test.*
 class TranslatorServiceTest {
 
     private lateinit var configManager: ConfigManager
+    private lateinit var libreTranslateService: LibreTranslateService
     private lateinit var translatorService: TranslatorService
 
     private fun createMockHttpClient(
@@ -24,6 +29,70 @@ class TranslatorServiceTest {
         return HttpClient(MockEngine) {
             engine {
                 addHandler(handler)
+            }
+        }
+    }
+
+    /**
+     * Creates a mock HTTP client that handles both /languages and /translate endpoints.
+     * The /languages endpoint returns a list of common languages.
+     * The translateResponse is returned for /translate requests.
+     */
+    private fun createLibreTranslateMockClient(
+        translateResponse: String
+    ): HttpClient {
+        return HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    when {
+                        request.url.encodedPath.endsWith("/languages") -> {
+                            respond(
+                                content = """[{"code":"en","name":"English"},{"code":"de","name":"German"},{"code":"fr","name":"French"},{"code":"es","name":"Spanish"}]""",
+                                status = HttpStatusCode.OK,
+                                headers = headersOf(HttpHeaders.ContentType, "application/json")
+                            )
+                        }
+                        request.url.encodedPath.endsWith("/translate") -> {
+                            respond(
+                                content = translateResponse,
+                                status = HttpStatusCode.OK,
+                                headers = headersOf(HttpHeaders.ContentType, "application/json")
+                            )
+                        }
+                        else -> {
+                            respond("", status = HttpStatusCode.NotFound)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Creates a mock HTTP client that handles /languages and uses a custom handler for /translate.
+     */
+    private fun createLibreTranslateMockClientWithHandler(
+        translateHandler: MockRequestHandleScope.(HttpRequestData) -> HttpResponseData
+    ): HttpClient {
+        return HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    when {
+                        request.url.encodedPath.endsWith("/languages") -> {
+                            respond(
+                                content = """[{"code":"en","name":"English"},{"code":"de","name":"German"},{"code":"fr","name":"French"},{"code":"es","name":"Spanish"}]""",
+                                status = HttpStatusCode.OK,
+                                headers = headersOf(HttpHeaders.ContentType, "application/json")
+                            )
+                        }
+                        request.url.encodedPath.endsWith("/translate") -> {
+                            translateHandler(request)
+                        }
+                        else -> {
+                            respond("", status = HttpStatusCode.NotFound)
+                        }
+                    }
+                }
             }
         }
     }
@@ -43,19 +112,19 @@ class TranslatorServiceTest {
     @BeforeEach
     fun setup() {
         configManager = mockk()
+        libreTranslateService = mockk()
 
         val settings = AppSettings(
             translation = TranslationSettings(defaultService = "libretranslate")
         )
         every { configManager.getSettings() } returns settings
 
-        val serviceConfig = TranslationServiceConfig(
-            libreTranslateUrl = "https://libretranslate.com",
-            deeplApiKey = null,
-            openaiApiKey = null,
-            googleApiKey = null
-        )
+        val serviceConfig = TranslationServiceConfig()
         every { configManager.getTranslationServiceConfig() } returns serviceConfig
+
+        // Mock LibreTranslate service as running on a random port
+        every { libreTranslateService.status } returns MutableStateFlow(ServerStatus.RUNNING)
+        every { libreTranslateService.serverUrl } returns "http://127.0.0.1:15000"
     }
 
     // ==================== Basic Translation Tests ====================
@@ -65,15 +134,9 @@ class TranslatorServiceTest {
 
         @Test
         fun `translate emits progress updates`() = runTest {
-            val httpClient = createMockHttpClient { request ->
-                respond(
-                    content = """{"translatedText": "Hallo"}""",
-                    status = HttpStatusCode.OK,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json")
-                )
-            }
+            val httpClient = createLibreTranslateMockClient("""{"translatedText": "Hallo"}""")
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             val progress = translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -85,15 +148,9 @@ class TranslatorServiceTest {
 
         @Test
         fun `translate returns translated subtitles`() = runTest {
-            val httpClient = createMockHttpClient { request ->
-                respond(
-                    content = """{"translatedText": "Hallo Welt"}""",
-                    status = HttpStatusCode.OK,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json")
-                )
-            }
+            val httpClient = createLibreTranslateMockClient("""{"translatedText": "Hallo Welt"}""")
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello World"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -107,7 +164,7 @@ class TranslatorServiceTest {
         @Test
         fun `getTranslationResult throws when no result available`() {
             val httpClient = createMockHttpClient { respond("") }
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             assertFailsWith<IllegalStateException> {
                 translatorService.getTranslationResult()
@@ -116,15 +173,9 @@ class TranslatorServiceTest {
 
         @Test
         fun `translate preserves subtitle timing`() = runTest {
-            val httpClient = createMockHttpClient { request ->
-                respond(
-                    content = """{"translatedText": "Translated"}""",
-                    status = HttpStatusCode.OK,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json")
-                )
-            }
+            val httpClient = createLibreTranslateMockClient("""{"translatedText": "Translated"}""")
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Original"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -143,7 +194,7 @@ class TranslatorServiceTest {
         @Test
         fun `cached translations are not re-fetched`() = runTest {
             var apiCallCount = 0
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 apiCallCount++
                 respond(
                     content = """{"translatedText": "Hallo"}""",
@@ -152,7 +203,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             // First translation
@@ -169,7 +220,7 @@ class TranslatorServiceTest {
         @Test
         fun `clearCache removes cached entries`() = runTest {
             var apiCallCount = 0
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 apiCallCount++
                 respond(
                     content = """{"translatedText": "Hallo"}""",
@@ -178,7 +229,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -190,7 +241,7 @@ class TranslatorServiceTest {
 
         @Test
         fun `getCacheSize returns correct count`() = runTest {
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 respond(
                     content = """{"translatedText": "Translated"}""",
                     status = HttpStatusCode.OK,
@@ -198,7 +249,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             assertEquals(0, translatorService.getCacheSize())
 
@@ -210,7 +261,7 @@ class TranslatorServiceTest {
 
         @Test
         fun `stats show cached segments`() = runTest {
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 respond(
                     content = """{"translatedText": "Translated"}""",
                     status = HttpStatusCode.OK,
@@ -218,7 +269,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello", "World"))
 
             // First translation - no cache
@@ -245,7 +296,7 @@ class TranslatorServiceTest {
         @Test
         fun `setGlossary and getGlossary work correctly`() {
             val httpClient = createMockHttpClient { respond("") }
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             assertNull(translatorService.getGlossary())
 
@@ -271,7 +322,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             val glossary = Glossary(
                 name = "Tech Terms",
@@ -298,7 +349,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             // Glossary is for en->de but we translate to French
             val glossary = Glossary(
@@ -325,7 +376,7 @@ class TranslatorServiceTest {
 
         @Test
         fun `italic tags are preserved`() = runTest {
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 // Return translation with placeholders
                 respond(
                     content = """{"translatedText": "⟦ITALIC_O_0⟧Hallo⟦ITALIC_C_0⟧ Welt"}""",
@@ -334,7 +385,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("<i>Hello</i> World"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -345,7 +396,7 @@ class TranslatorServiceTest {
 
         @Test
         fun `line breaks are preserved`() = runTest {
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 respond(
                     content = """{"translatedText": "Zeile 1 ⟦NL⟧ Zeile 2"}""",
                     status = HttpStatusCode.OK,
@@ -353,7 +404,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Line 1\nLine 2"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -364,7 +415,7 @@ class TranslatorServiceTest {
 
         @Test
         fun `music symbols are preserved`() = runTest {
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 respond(
                     content = """{"translatedText": "⟦MUSIC_0⟧ Musik spielt ⟦MUSIC_1⟧"}""",
                     status = HttpStatusCode.OK,
@@ -372,7 +423,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("♪ Music playing ♪"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -389,31 +440,47 @@ class TranslatorServiceTest {
 
         @Test
         fun `rate limit triggers retry with backoff`() = runTest {
-            var callCount = 0
-            val httpClient = createMockHttpClient { request ->
-                callCount++
-                if (callCount == 1) {
-                    respond(
-                        content = "",
-                        status = HttpStatusCode.TooManyRequests,
-                        headers = headersOf("Retry-After", "1")
-                    )
-                } else {
-                    respond(
-                        content = """{"translatedText": "Hallo"}""",
-                        status = HttpStatusCode.OK,
-                        headers = headersOf(HttpHeaders.ContentType, "application/json")
-                    )
+            var translateCallCount = 0
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"},{"code":"fr","name":"French"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            request.url.encodedPath.endsWith("/translate") -> {
+                                translateCallCount++
+                                if (translateCallCount == 1) {
+                                    respond(
+                                        content = "",
+                                        status = HttpStatusCode.TooManyRequests,
+                                        headers = headersOf("Retry-After", "1")
+                                    )
+                                } else {
+                                    respond(
+                                        content = """{"translatedText": "Hallo"}""",
+                                        status = HttpStatusCode.OK,
+                                        headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                    )
+                                }
+                            }
+                            else -> respond("", status = HttpStatusCode.NotFound)
+                        }
+                    }
                 }
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             val progress = translatorService.translate(subtitles, Language.GERMAN).toList()
 
             // Should have retried and succeeded
-            assertEquals(2, callCount)
+            assertEquals(2, translateCallCount)
             assertTrue(progress.any { it.message.contains("Rate limited") })
         }
     }
@@ -428,35 +495,45 @@ class TranslatorServiceTest {
             var libreTranslateCallCount = 0
             var deeplCallCount = 0
 
-            val httpClient = createMockHttpClient { request ->
-                when {
-                    request.url.toString().contains("libretranslate") -> {
-                        libreTranslateCallCount++
-                        respond(
-                            content = """{"error": "Server error"}""",
-                            status = HttpStatusCode.InternalServerError
-                        )
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"},{"code":"fr","name":"French"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            request.url.toString().contains("127.0.0.1:15000") && request.url.encodedPath.endsWith("/translate") -> {
+                                libreTranslateCallCount++
+                                respond(
+                                    content = """{"error": "Server error"}""",
+                                    status = HttpStatusCode.InternalServerError
+                                )
+                            }
+                            request.url.toString().contains("deepl") -> {
+                                deeplCallCount++
+                                respond(
+                                    content = """{"translations": [{"text": "Hallo"}]}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            else -> respond("")
+                        }
                     }
-                    request.url.toString().contains("deepl") -> {
-                        deeplCallCount++
-                        respond(
-                            content = """{"translations": [{"text": "Hallo"}]}""",
-                            status = HttpStatusCode.OK,
-                            headers = headersOf(HttpHeaders.ContentType, "application/json")
-                        )
-                    }
-                    else -> respond("")
                 }
             }
 
             // Configure with fallback
             val serviceConfig = TranslationServiceConfig(
-                libreTranslateUrl = "https://libretranslate.com",
                 deeplApiKey = "test-key"
             )
             every { configManager.getTranslationServiceConfig() } returns serviceConfig
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -477,14 +554,14 @@ class TranslatorServiceTest {
         @Test
         fun `getLastStats returns null before any translation`() {
             val httpClient = createMockHttpClient { respond("") }
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             assertNull(translatorService.getLastStats())
         }
 
         @Test
         fun `getLastStats returns correct statistics`() = runTest {
-            val httpClient = createMockHttpClient { request ->
+            val httpClient = createLibreTranslateMockClientWithHandler { request ->
                 respond(
                     content = """{"translatedText": "Translated"}""",
                     status = HttpStatusCode.OK,
@@ -492,7 +569,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello", "World", "Test"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -517,16 +594,32 @@ class TranslatorServiceTest {
             var translationIndex = 0
             val translations = listOf("Hallo", "Welt", "Test")
 
-            val httpClient = createMockHttpClient { request ->
-                val translation = translations[translationIndex++]
-                respond(
-                    content = """{"translatedText": "$translation"}""",
-                    status = HttpStatusCode.OK,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json")
-                )
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"},{"code":"fr","name":"French"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            request.url.encodedPath.endsWith("/translate") -> {
+                                val translation = translations[translationIndex++]
+                                respond(
+                                    content = """{"translatedText": "$translation"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            else -> respond("", status = HttpStatusCode.NotFound)
+                        }
+                    }
+                }
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello", "World", "Test"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -552,7 +645,6 @@ class TranslatorServiceTest {
             every { configManager.getSettings() } returns settings
 
             val serviceConfig = TranslationServiceConfig(
-                libreTranslateUrl = null,
                 deeplApiKey = "test-api-key"
             )
             every { configManager.getTranslationServiceConfig() } returns serviceConfig
@@ -576,7 +668,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -602,7 +694,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -621,7 +713,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello", "World"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -646,7 +738,6 @@ class TranslatorServiceTest {
             every { configManager.getSettings() } returns settings
 
             val serviceConfig = TranslationServiceConfig(
-                libreTranslateUrl = null,
                 openaiApiKey = "test-openai-key"
             )
             every { configManager.getTranslationServiceConfig() } returns serviceConfig
@@ -668,7 +759,7 @@ class TranslatorServiceTest {
                 )
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello", "World"))
 
             translatorService.translate(subtitles, Language.GERMAN).toList()
@@ -687,11 +778,24 @@ class TranslatorServiceTest {
 
         @Test
         fun `handles network error gracefully`() = runTest {
-            val httpClient = createMockHttpClient { request ->
-                throw java.io.IOException("Network error")
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            else -> throw java.io.IOException("Network error")
+                        }
+                    }
+                }
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             assertFailsWith<TranslationException> {
@@ -701,15 +805,28 @@ class TranslatorServiceTest {
 
         @Test
         fun `handles invalid JSON response`() = runTest {
-            val httpClient = createMockHttpClient { request ->
-                respond(
-                    content = "not valid json",
-                    status = HttpStatusCode.OK,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json")
-                )
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            else -> respond(
+                                content = "not valid json",
+                                status = HttpStatusCode.OK,
+                                headers = headersOf(HttpHeaders.ContentType, "application/json")
+                            )
+                        }
+                    }
+                }
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             assertFailsWith<Exception> {
@@ -719,20 +836,31 @@ class TranslatorServiceTest {
 
         @Test
         fun `handles 500 server error`() = runTest {
-            val httpClient = createMockHttpClient { request ->
-                respond(
-                    content = """{"error": "Internal server error"}""",
-                    status = HttpStatusCode.InternalServerError
-                )
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            else -> respond(
+                                content = """{"error": "Internal server error"}""",
+                                status = HttpStatusCode.InternalServerError
+                            )
+                        }
+                    }
+                }
             }
 
-            // Only LibreTranslate configured, no fallback
-            val serviceConfig = TranslationServiceConfig(
-                libreTranslateUrl = "https://libretranslate.com"
-            )
+            // Only LibreTranslate configured (via local server), no fallback
+            val serviceConfig = TranslationServiceConfig()
             every { configManager.getTranslationServiceConfig() } returns serviceConfig
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             assertFailsWith<TranslationException> {
@@ -746,15 +874,11 @@ class TranslatorServiceTest {
                 respond("")
             }
 
-            // No services configured
-            val serviceConfig = TranslationServiceConfig(
-                libreTranslateUrl = null,
-                deeplApiKey = null,
-                openaiApiKey = null
-            )
+            // No services configured (no local server, no API keys)
+            val serviceConfig = TranslationServiceConfig()
             every { configManager.getTranslationServiceConfig() } returns serviceConfig
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
             val subtitles = createSubtitles(listOf("Hello"))
 
             assertFailsWith<TranslationException> {
@@ -770,18 +894,34 @@ class TranslatorServiceTest {
 
         @Test
         fun `respects batch size limits`() = runTest {
-            var batchCount = 0
+            var translateCallCount = 0
 
-            val httpClient = createMockHttpClient { request ->
-                batchCount++
-                respond(
-                    content = """{"translatedText": "Translated"}""",
-                    status = HttpStatusCode.OK,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json")
-                )
+            val httpClient = HttpClient(MockEngine) {
+                engine {
+                    addHandler { request ->
+                        when {
+                            request.url.encodedPath.endsWith("/languages") -> {
+                                respond(
+                                    content = """[{"code":"en","name":"English"},{"code":"de","name":"German"}]""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            request.url.encodedPath.endsWith("/translate") -> {
+                                translateCallCount++
+                                respond(
+                                    content = """{"translatedText": "Translated"}""",
+                                    status = HttpStatusCode.OK,
+                                    headers = headersOf(HttpHeaders.ContentType, "application/json")
+                                )
+                            }
+                            else -> respond("", status = HttpStatusCode.NotFound)
+                        }
+                    }
+                }
             }
 
-            translatorService = TranslatorService(httpClient, configManager)
+            translatorService = TranslatorService(httpClient, configManager, libreTranslateService)
 
             // Create many segments
             val texts = (1..200).map { "Segment $it" }
@@ -790,7 +930,7 @@ class TranslatorServiceTest {
             translatorService.translate(subtitles, Language.GERMAN).toList()
 
             // LibreTranslate translates one at a time, so should have 200 calls
-            assertEquals(200, batchCount)
+            assertEquals(200, translateCallCount)
         }
     }
 }

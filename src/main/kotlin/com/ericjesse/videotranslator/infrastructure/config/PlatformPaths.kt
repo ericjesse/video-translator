@@ -83,6 +83,15 @@ class PlatformPaths {
         File(dir).mkdirs()
         dir
     }
+
+    /**
+     * Directory for LibreTranslate virtual environment and data
+     */
+    val libreTranslateDir: String by lazy {
+        val dir = "$dataDir${File.separator}libretranslate"
+        File(dir).mkdirs()
+        dir
+    }
     
     /**
      * Current operating system

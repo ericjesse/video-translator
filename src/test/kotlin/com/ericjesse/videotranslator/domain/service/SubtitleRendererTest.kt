@@ -1,9 +1,35 @@
 package com.ericjesse.videotranslator.domain.service
 
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.infrastructure.config.*
-import com.ericjesse.videotranslator.infrastructure.process.*
-import io.mockk.*
+import com.ericjesse.videotranslator.domain.model.AudioCodec
+import com.ericjesse.videotranslator.domain.model.EncodingConfig
+import com.ericjesse.videotranslator.domain.model.EncodingPreset
+import com.ericjesse.videotranslator.domain.model.HardwareEncoder
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.OutputFormat
+import com.ericjesse.videotranslator.domain.model.OutputOptions
+import com.ericjesse.videotranslator.domain.model.Platform
+import com.ericjesse.videotranslator.domain.model.RenderOptions
+import com.ericjesse.videotranslator.domain.model.SubtitleEntry
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.model.VideoQuality
+import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
+import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import java.io.File
+import java.nio.file.Path
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
@@ -11,9 +37,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import java.io.File
-import java.nio.file.Path
-import kotlin.test.*
 
 class SubtitleRendererTest {
 
@@ -33,6 +56,10 @@ class SubtitleRendererTest {
 
         every { platformPaths.getBinaryPath("ffmpeg") } returns "/usr/local/bin/ffmpeg"
         every { platformPaths.getBinaryPath("ffprobe") } returns "/usr/local/bin/ffprobe"
+
+        // ConfigManager mocks
+        every { configManager.getBinaryPath("ffmpeg") } returns "/usr/local/bin/ffmpeg"
+        every { configManager.getBinaryPath("ffprobe") } returns "/usr/local/bin/ffprobe"
 
         val settings = AppSettings()
         every { configManager.getSettings() } returns settings

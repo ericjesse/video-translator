@@ -3,6 +3,7 @@ package com.ericjesse.videotranslator.domain.service
 import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
 import com.ericjesse.videotranslator.domain.validation.*
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
@@ -29,14 +30,20 @@ private val logger = KotlinLogging.logger {}
  *
  * @property processExecutor Executor for running yt-dlp commands.
  * @property platformPaths Platform-specific paths for binaries and cache.
+ * @property configManager Configuration manager for accessing binary paths.
  */
 class VideoDownloader(
     private val processExecutor: ProcessExecutor,
-    private val platformPaths: PlatformPaths
+    private val platformPaths: PlatformPaths,
+    private val configManager: ConfigManager,
+    private val subtitleDeduplicator: SubtitleDeduplicator = SubtitleDeduplicator()
 ) {
 
     private val ytDlpPath: String
-        get() = platformPaths.getBinaryPath("yt-dlp")
+        get() = configManager.getBinaryPath("yt-dlp")
+
+    private val ffmpegPath: String
+        get() = configManager.getBinaryPath("ffmpeg")
 
     private val downloadDir: File
         get() = File(platformPaths.cacheDir, "downloads").also { it.mkdirs() }
@@ -235,6 +242,10 @@ class VideoDownloader(
         val command = buildList {
             add(ytDlpPath)
             add("--no-playlist")
+
+            // Tell yt-dlp where to find FFmpeg for merging video/audio streams
+            add("--ffmpeg-location")
+            add(ffmpegPath)
 
             // Format selection
             if (options.audioOnly) {
@@ -684,7 +695,21 @@ class VideoDownloader(
             i++
         }
 
-        return entries
+        // Deduplicate entries (YouTube VTT often has phantom short segments)
+        return deduplicateSubtitleEntries(entries)
+    }
+
+    /**
+     * Removes duplicate/overlapping subtitle entries using the shared deduplicator.
+     */
+    private fun deduplicateSubtitleEntries(entries: List<SubtitleEntry>): List<SubtitleEntry> {
+        val result = subtitleDeduplicator.deduplicate(
+            entries = entries,
+            toTimedText = { SubtitleDeduplicator.TimedText(it.startTime, it.endTime, it.text) },
+            updateText = { entry, newText -> entry.copy(text = newText) },
+            reindex = { entry, newIndex -> entry.copy(index = newIndex) }
+        )
+        return result.entries
     }
 
     private fun parseVttTimestamp(timestamp: String): Long {

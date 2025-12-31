@@ -181,11 +181,28 @@ class ProcessExecutor {
             val exitCode = process.exitValue()
 
             if (exitCode != 0) {
+                // Try to capture any remaining error output
+                val errorOutput = try {
+                    process.errorStream.bufferedReader(StandardCharsets.UTF_8).readText().trim()
+                } catch (e: Exception) {
+                    ""
+                }
+
                 logger.error { "Process failed with exit code $exitCode after ${elapsed}ms" }
+                if (errorOutput.isNotEmpty()) {
+                    logger.error { "Error output: $errorOutput" }
+                }
+
+                val errorMessage = if (errorOutput.isNotEmpty()) {
+                    "Process exited with code $exitCode: $errorOutput"
+                } else {
+                    "Process exited with code $exitCode"
+                }
+
                 throw ProcessException(
                     command = command.first(),
                     exitCode = exitCode,
-                    message = "Process exited with code $exitCode"
+                    message = errorMessage
                 )
             }
 
@@ -363,6 +380,10 @@ class ProcessExecutor {
         val finalCommand = applyMemoryLimit(command, config.memoryLimitMb)
 
         logger.debug { "Final command: ${finalCommand.joinToString(" ")}" }
+        logger.debug { "Command arguments (${finalCommand.size} total):" }
+        finalCommand.forEachIndexed { index, arg ->
+            logger.debug { "  [$index] = '$arg'" }
+        }
 
         return ProcessBuilder(finalCommand).apply {
             if (mergeErrorStream) {

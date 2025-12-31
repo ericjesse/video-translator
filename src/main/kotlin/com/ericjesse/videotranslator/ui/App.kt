@@ -3,6 +3,7 @@ package com.ericjesse.videotranslator.ui
 import androidx.compose.runtime.*
 import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.infrastructure.translation.ServerStatus
 import com.ericjesse.videotranslator.ui.error.GlobalErrorDisplay
 import com.ericjesse.videotranslator.ui.screens.main.MainScreen
 import com.ericjesse.videotranslator.ui.screens.main.MainViewModel
@@ -10,6 +11,9 @@ import com.ericjesse.videotranslator.ui.screens.progress.ProgressScreen
 import com.ericjesse.videotranslator.ui.screens.progress.ProgressViewModel
 import com.ericjesse.videotranslator.ui.screens.settings.SettingsScreen
 import com.ericjesse.videotranslator.ui.screens.setup.SetupWizard
+import io.github.oshai.kotlinlogging.KotlinLogging
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * Navigation destinations for the application.
@@ -34,6 +38,27 @@ fun App(appModule: AppModule) {
         mutableStateOf<Screen>(
             if (isFirstRun) Screen.SetupWizard else Screen.Main
         )
+    }
+
+    // Start LibreTranslate server on app startup (if setup is complete)
+    LaunchedEffect(currentScreen) {
+        // Only start when we're on Main screen (after setup is complete)
+        if (currentScreen is Screen.Main) {
+            val libreTranslate = appModule.libreTranslateService
+            val settings = configManager.getSettings()
+
+            // Start server if LibreTranslate is the selected service and server is not running
+            if (settings.translation.defaultService == "libretranslate" &&
+                libreTranslate.status.value == ServerStatus.STOPPED) {
+                logger.info { "Starting LibreTranslate server on app startup..." }
+                val started = libreTranslate.start()
+                if (started) {
+                    logger.info { "LibreTranslate server started successfully" }
+                } else {
+                    logger.warn { "Failed to start LibreTranslate server" }
+                }
+            }
+        }
     }
 
     // Navigation callbacks

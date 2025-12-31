@@ -17,6 +17,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -164,8 +166,9 @@ private fun BackgroundColorDropdown(
                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
                 },
                 modifier = Modifier
-                    .menuAnchor()
-                    .fillMaxWidth(),
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth()
+                    .pointerHoverIcon(PointerIcon.Hand),
                 shape = RoundedCornerShape(8.dp),
                 textStyle = MaterialTheme.typography.bodyMedium,
                 colors = OutlinedTextFieldDefaults.colors(

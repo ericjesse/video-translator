@@ -1,7 +1,7 @@
 package com.ericjesse.videotranslator.ui.screens.setup.steps
 
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -76,13 +76,18 @@ fun CompleteStep(
         showButton = true
     }
 
+    val scrollState = rememberScrollState()
+
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(24.dp)
+            modifier = Modifier
+                .verticalScroll(scrollState)
+                .padding(24.dp)
+                .padding(end = 12.dp) // Extra padding for scrollbar
         ) {
             // Animated success icon
             AnimatedSuccessIcon(visible = showIcon)
@@ -124,6 +129,15 @@ fun CompleteStep(
                 onClick = onStart
             )
         }
+
+        // Scrollbar
+        VerticalScrollbar(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+            adapter = rememberScrollbarAdapter(scrollState)
+        )
     }
 }
 

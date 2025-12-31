@@ -1,15 +1,35 @@
 package com.ericjesse.videotranslator.integration
 
-import com.ericjesse.videotranslator.infrastructure.config.*
+import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.config.BurnedInSettings
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.config.InstalledVersions
+import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
+import com.ericjesse.videotranslator.infrastructure.config.ResourceSettings
+import com.ericjesse.videotranslator.infrastructure.config.SetupProgress
+import com.ericjesse.videotranslator.infrastructure.config.SubtitleSettings
+import com.ericjesse.videotranslator.infrastructure.config.TranscriptionSettings
+import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
+import com.ericjesse.videotranslator.infrastructure.config.TranslationSettings
+import com.ericjesse.videotranslator.infrastructure.config.UiSettings
+import com.ericjesse.videotranslator.infrastructure.config.UpdateSettings
 import com.ericjesse.videotranslator.infrastructure.security.SecureStorage
-import io.mockk.*
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import org.junit.jupiter.api.*
-import org.junit.jupiter.api.Assertions.*
-import org.junit.jupiter.api.io.TempDir
+import io.mockk.clearAllMocks
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import java.io.File
 import java.nio.file.Path
+import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 
 /**
  * Integration tests for ConfigManager.
@@ -148,9 +168,9 @@ class ConfigManagerIntegrationTest {
             assertEquals(1, settings.version)
             assertEquals("en", settings.language)
             assertEquals("base", settings.transcription.whisperModel)
-            assertTrue(settings.transcription.preferYouTubeCaptions)
+            assertFalse(settings.transcription.preferYouTubeCaptions)  // Default is false - use local Whisper
             assertEquals("libretranslate", settings.translation.defaultService)
-            assertEquals("soft", settings.subtitle.defaultOutputMode)
+            assertEquals("burned_in", settings.subtitle.defaultOutputMode)
             assertTrue(settings.updates.checkAutomatically)
             assertEquals(7, settings.updates.checkIntervalDays)
         }
@@ -160,7 +180,7 @@ class ConfigManagerIntegrationTest {
             val defaults = TranscriptionSettings()
 
             assertEquals("base", defaults.whisperModel)
-            assertTrue(defaults.preferYouTubeCaptions)
+            assertFalse(defaults.preferYouTubeCaptions)  // Default is false - use local Whisper
         }
 
         @Test
@@ -176,7 +196,7 @@ class ConfigManagerIntegrationTest {
         fun `default SubtitleSettings has expected values`() {
             val defaults = SubtitleSettings()
 
-            assertEquals("soft", defaults.defaultOutputMode)
+            assertEquals("burned_in", defaults.defaultOutputMode)
             assertFalse(defaults.alwaysExportSrt)
             assertEquals(24, defaults.burnedIn.fontSize)
             assertEquals("#FFFFFF", defaults.burnedIn.fontColor)
@@ -337,7 +357,6 @@ class ConfigManagerIntegrationTest {
         @Test
         fun `saves and loads translation service config`() {
             val config = TranslationServiceConfig(
-                libreTranslateUrl = "https://custom.libretranslate.com",
                 deeplApiKey = "test-deepl-key",
                 openaiApiKey = "test-openai-key"
             )
@@ -346,7 +365,6 @@ class ConfigManagerIntegrationTest {
             configManager.clearCache()
 
             val loaded = configManager.getTranslationServiceConfig()
-            assertEquals("https://custom.libretranslate.com", loaded.libreTranslateUrl)
             assertEquals("test-deepl-key", loaded.deeplApiKey)
             assertEquals("test-openai-key", loaded.openaiApiKey)
         }
@@ -355,7 +373,6 @@ class ConfigManagerIntegrationTest {
         fun `returns default service config when no file exists`() {
             val config = configManager.getTranslationServiceConfig()
 
-            assertEquals("https://libretranslate.com", config.libreTranslateUrl)
             assertNull(config.deeplApiKey)
             assertNull(config.openaiApiKey)
             assertNull(config.googleApiKey)
@@ -378,7 +395,6 @@ class ConfigManagerIntegrationTest {
 
             // Save config (keys go to secure storage)
             val config = TranslationServiceConfig(
-                libreTranslateUrl = "https://libretranslate.com",
                 deeplApiKey = "secure-deepl-key",
                 openaiApiKey = "secure-openai-key"
             )
@@ -399,7 +415,7 @@ class ConfigManagerIntegrationTest {
             // Write services file without API keys
             val file = File(platformPaths.servicesFile)
             file.parentFile?.mkdirs()
-            file.writeText("""{"libreTranslateUrl": "https://example.com"}""")
+            file.writeText("""{}""")
 
             val configWithSecure = ConfigManager(platformPaths, secureStorage)
             val config = configWithSecure.getTranslationServiceConfig()

@@ -48,8 +48,6 @@ enum class Language(val code: String, val displayName: String, val nativeName: S
     
     companion object {
         fun fromCode(code: String): Language? = entries.find { it.code == code }
-        
-        val AUTO_DETECT = null // Represented as null in source language selection
     }
 }
 

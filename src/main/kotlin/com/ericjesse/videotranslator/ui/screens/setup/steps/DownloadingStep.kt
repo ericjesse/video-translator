@@ -4,12 +4,10 @@ package com.ericjesse.videotranslator.ui.screens.setup.steps
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -122,6 +120,15 @@ fun DownloadingStep(
                 name = "whispermodel",
                 displayName = "Whisper $selectedWhisperModel model",
                 totalSize = WhisperModel.fromId(selectedWhisperModel).sizeBytes
+            )
+        )
+    }
+    var libreTranslateState by remember {
+        mutableStateOf(
+            ComponentDownloadState(
+                name = "libretranslate",
+                displayName = "LibreTranslate",
+                totalSize = 150_000_000L // ~150MB for LibreTranslate + dependencies
             )
         )
     }
@@ -251,7 +258,7 @@ fun DownloadingStep(
             return@LaunchedEffect
         }
 
-        // Download Whisper model (60% - 100%)
+        // Download Whisper model (60% - 80%)
         currentStatusMessage = i18n["setup.downloading.from", "Whisper $selectedWhisperModel model", "huggingface.co"]
         whisperModelState = whisperModelState.copy(status = DownloadStatus.DOWNLOADING)
 
@@ -270,7 +277,7 @@ fun DownloadingStep(
                         downloadedSize = (whisperModelState.totalSize * progress.percentage).toLong(),
                         message = progress.message
                     )
-                    overallProgress = 0.60f + progress.percentage * 0.40f
+                    overallProgress = 0.60f + progress.percentage * 0.20f
                 }
 
             if (whisperModelState.status != DownloadStatus.ERROR) {
@@ -280,6 +287,44 @@ fun DownloadingStep(
             whisperModelState = whisperModelState.copy(
                 status = DownloadStatus.ERROR,
                 errorMessage = e.message ?: "Download failed"
+            )
+            hasError = true
+        }
+
+        if (hasError) {
+            isDownloading = false
+            return@LaunchedEffect
+        }
+
+        // Install LibreTranslate (80% - 100%)
+        currentStatusMessage = i18n["setup.downloading.installing", "LibreTranslate"]
+        libreTranslateState = libreTranslateState.copy(status = DownloadStatus.DOWNLOADING)
+
+        try {
+            updateManager.installLibreTranslate()
+                .catch { e ->
+                    libreTranslateState = libreTranslateState.copy(
+                        status = DownloadStatus.ERROR,
+                        errorMessage = e.message ?: "Installation failed"
+                    )
+                    hasError = true
+                }
+                .collect { progress ->
+                    libreTranslateState = libreTranslateState.copy(
+                        progress = progress.percentage,
+                        downloadedSize = (libreTranslateState.totalSize * progress.percentage).toLong(),
+                        message = progress.message
+                    )
+                    overallProgress = 0.80f + progress.percentage * 0.20f
+                }
+
+            if (libreTranslateState.status != DownloadStatus.ERROR) {
+                libreTranslateState = libreTranslateState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
+            }
+        } catch (e: Exception) {
+            libreTranslateState = libreTranslateState.copy(
+                status = DownloadStatus.ERROR,
+                errorMessage = e.message ?: "Installation failed"
             )
             hasError = true
         }
@@ -323,15 +368,20 @@ fun DownloadingStep(
         label = "contentAlpha"
     )
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .alpha(contentAlpha)
-            .verticalScroll(scrollState)
-            .padding(24.dp)
     ) {
-        // Components card
-        AppCard(
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(24.dp)
+                .padding(end = 12.dp) // Extra padding for scrollbar
+        ) {
+            // Components card
+            AppCard(
             modifier = Modifier.fillMaxWidth(),
             elevation = com.ericjesse.videotranslator.ui.components.CardElevation.Low
         ) {
@@ -375,6 +425,17 @@ fun DownloadingStep(
                 // Whisper model
                 DownloadComponentItem(
                     state = whisperModelState,
+                    i18n = i18n
+                )
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                // LibreTranslate
+                DownloadComponentItem(
+                    state = libreTranslateState,
                     i18n = i18n
                 )
             }
@@ -476,6 +537,13 @@ fun DownloadingStep(
                                 progress = 0f
                             )
                         }
+                        if (libreTranslateState.status == DownloadStatus.ERROR) {
+                            libreTranslateState = libreTranslateState.copy(
+                                status = DownloadStatus.PENDING,
+                                errorMessage = null,
+                                progress = 0f
+                            )
+                        }
                         overallProgress = 0f
                     },
                     style = ButtonStyle.Primary,
@@ -494,7 +562,17 @@ fun DownloadingStep(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Scrollbar
+        VerticalScrollbar(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+            adapter = rememberScrollbarAdapter(scrollState)
+        )
     }
 }
 

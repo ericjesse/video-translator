@@ -128,19 +128,30 @@ class MainScreenTest {
         }
 
         @Test
-        @DisplayName("canTranslate should require form validity and no pending operations")
+        @DisplayName("canTranslate should require videoInfo and output directory")
         fun canTranslateRequirements() {
+            // canTranslate requires videoInfo (from successful metadata fetch) and output directory
+            val mockVideoInfo = VideoInfo(
+                url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                id = "dQw4w9WgXcQ",
+                title = "Test Video",
+                duration = 60000L
+            )
+
             val validState = MainScreenState(
                 youtubeUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                outputDirectory = "/home/user/videos"
+                outputDirectory = "/home/user/videos",
+                videoInfo = mockVideoInfo
             )
             assertTrue(validState.canTranslate)
 
-            val fetchingState = validState.copy(isFetchingVideoInfo = true)
-            assertFalse(fetchingState.canTranslate)
+            // Without videoInfo, canTranslate should be false
+            val noVideoInfoState = validState.copy(videoInfo = null)
+            assertFalse(noVideoInfoState.canTranslate)
 
-            val connectivityCheckState = validState.copy(isCheckingConnectivity = true)
-            assertFalse(connectivityCheckState.canTranslate)
+            // Without output directory, canTranslate should be false
+            val noOutputState = validState.copy(outputDirectory = "")
+            assertFalse(noOutputState.canTranslate)
         }
     }
 
@@ -253,10 +264,10 @@ class MainScreenTest {
     inner class LanguageSelectionTest {
 
         @Test
-        @DisplayName("Source language should be initially null (auto-detect)")
-        fun sourceLanguageInitiallyNull() {
+        @DisplayName("Source language should default to English")
+        fun sourceLanguageDefaultsToEnglish() {
             val viewModel = MainViewModel(appModule, testScope)
-            assertNull(viewModel.state.sourceLanguage)
+            assertEquals(Language.ENGLISH, viewModel.state.sourceLanguage)
         }
 
         @Test
@@ -320,10 +331,10 @@ class MainScreenTest {
     inner class OutputOptionsTest {
 
         @Test
-        @DisplayName("Default subtitle type should be SOFT")
-        fun defaultSubtitleTypeSoft() {
+        @DisplayName("Default subtitle type should be BURNED_IN")
+        fun defaultSubtitleTypeBurnedIn() {
             val viewModel = MainViewModel(appModule, testScope)
-            assertEquals(SubtitleType.SOFT, viewModel.state.subtitleType)
+            assertEquals(SubtitleType.BURNED_IN, viewModel.state.subtitleType)
         }
 
         @Test

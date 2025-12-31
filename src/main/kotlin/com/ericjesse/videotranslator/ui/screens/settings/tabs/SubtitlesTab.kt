@@ -20,6 +20,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -175,7 +177,8 @@ private fun OutputModeDropdown(
             },
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .pointerHoverIcon(PointerIcon.Hand),
             shape = RoundedCornerShape(8.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -423,7 +426,8 @@ private fun FontSizeSelector(
                 },
                 modifier = Modifier
                     .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .pointerHoverIcon(PointerIcon.Hand),
                 shape = RoundedCornerShape(8.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -605,7 +609,8 @@ private fun BackgroundColorSelector(
                 },
                 modifier = Modifier
                     .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .pointerHoverIcon(PointerIcon.Hand),
                 shape = RoundedCornerShape(8.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,

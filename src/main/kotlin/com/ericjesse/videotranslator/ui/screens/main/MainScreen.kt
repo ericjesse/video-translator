@@ -4,12 +4,9 @@ package com.ericjesse.videotranslator.ui.screens.main
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -18,14 +15,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.BackgroundColor
 import com.ericjesse.videotranslator.domain.model.Language
 import com.ericjesse.videotranslator.domain.model.SubtitleType
 import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.VideoInfo
 import com.ericjesse.videotranslator.ui.components.*
 import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
@@ -164,51 +165,65 @@ private fun MainScreenContent(
             modifier = Modifier.fillMaxWidth()
         )
 
-        // Scrollable content
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(scrollState)
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // URL Input Section
-            UrlInputSection(
-                i18n = i18n,
-                url = state.youtubeUrl,
-                onUrlChange = onUrlChange,
-                error = state.urlError,
-                onPaste = onPaste
-            )
+        // Scrollable content with always-visible scrollbar
+        Box(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .padding(end = 12.dp), // Extra padding for scrollbar
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // URL Input Section
+                UrlInputSection(
+                    i18n = i18n,
+                    url = state.youtubeUrl,
+                    onUrlChange = onUrlChange,
+                    error = state.urlError,
+                    onPaste = onPaste,
+                    isFetchingVideoInfo = state.isFetchingVideoInfo,
+                    videoInfo = state.videoInfo
+                )
 
-            // Language Selection Section
-            LanguageSelectionSection(
-                i18n = i18n,
-                sourceLanguage = state.sourceLanguage,
-                targetLanguage = state.targetLanguage,
-                onSourceLanguageChange = onSourceLanguageChange,
-                onTargetLanguageChange = onTargetLanguageChange
-            )
+                // Language Selection Section
+                LanguageSelectionSection(
+                    i18n = i18n,
+                    sourceLanguage = state.sourceLanguage,
+                    targetLanguage = state.targetLanguage,
+                    onSourceLanguageChange = onSourceLanguageChange,
+                    onTargetLanguageChange = onTargetLanguageChange
+                )
 
-            // Output Options Section
-            OutputOptionsSection(
-                i18n = i18n,
-                subtitleType = state.subtitleType,
-                onSubtitleTypeChange = onSubtitleTypeChange,
-                exportSrt = state.exportSrt,
-                onExportSrtChange = onExportSrtChange,
-                backgroundColor = state.burnedInStyle.backgroundColor,
-                onBackgroundColorChange = onBackgroundColorChange,
-                backgroundOpacity = state.burnedInStyle.backgroundOpacity,
-                onBackgroundOpacityChange = onBackgroundOpacityChange
-            )
+                // Output Options Section
+                OutputOptionsSection(
+                    i18n = i18n,
+                    subtitleType = state.subtitleType,
+                    onSubtitleTypeChange = onSubtitleTypeChange,
+                    exportSrt = state.exportSrt,
+                    onExportSrtChange = onExportSrtChange,
+                    backgroundColor = state.burnedInStyle.backgroundColor,
+                    onBackgroundColorChange = onBackgroundColorChange,
+                    backgroundOpacity = state.burnedInStyle.backgroundOpacity,
+                    onBackgroundOpacityChange = onBackgroundOpacityChange
+                )
 
-            // Output Location Section
-            OutputLocationSection(
-                i18n = i18n,
-                path = state.outputDirectory,
-                onPathChange = onOutputDirectoryChange,
-                onBrowse = onBrowse
+                // Output Location Section
+                OutputLocationSection(
+                    i18n = i18n,
+                    path = state.outputDirectory,
+                    onPathChange = onOutputDirectoryChange,
+                    onBrowse = onBrowse
+                )
+            }
+
+            // Always visible scrollbar
+            VerticalScrollbar(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+                adapter = rememberScrollbarAdapter(scrollState)
             )
         }
 
@@ -255,7 +270,9 @@ private fun UrlInputSection(
     url: String,
     onUrlChange: (String) -> Unit,
     error: String?,
-    onPaste: () -> Unit
+    onPaste: () -> Unit,
+    isFetchingVideoInfo: Boolean = false,
+    videoInfo: VideoInfo? = null
 ) {
     AppCard(
         modifier = Modifier.fillMaxWidth(),
@@ -313,7 +330,81 @@ private fun UrlInputSection(
                     )
                 }
             }
+
+            // Loading indicator or video info
+            AnimatedVisibility(
+                visible = isFetchingVideoInfo || videoInfo != null,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                if (isFetchingVideoInfo) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = i18n["main.fetchingVideoInfo"],
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else if (videoInfo != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = AppColors.success,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = videoInfo.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = formatDuration(videoInfo.duration),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/**
+ * Formats duration in milliseconds to a human-readable string.
+ */
+private fun formatDuration(millis: Long): String {
+    val totalSeconds = millis / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+
+    return when {
+        hours > 0 -> String.format("%d:%02d:%02d", hours, minutes, seconds)
+        else -> String.format("%d:%02d", minutes, seconds)
     }
 }
 
@@ -350,8 +441,7 @@ private fun LanguageSelectionSection(
                 LanguageDropdown(
                     selectedLanguage = sourceLanguage,
                     onLanguageSelected = onSourceLanguageChange,
-                    includeAutoDetect = true,
-                    autoDetectLabel = i18n["main.autoDetect"],
+                    includeAutoDetect = false,
                     i18n = i18n,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -407,8 +497,9 @@ private fun LanguageDropdown(
                 ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
             },
             modifier = Modifier
-                .menuAnchor()
-                .fillMaxWidth(),
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth()
+                .pointerHoverIcon(PointerIcon.Hand),
             shape = RoundedCornerShape(8.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,

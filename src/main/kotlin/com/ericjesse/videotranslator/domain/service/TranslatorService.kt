@@ -4,6 +4,8 @@ import com.ericjesse.videotranslator.domain.model.*
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
+import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
+import com.ericjesse.videotranslator.infrastructure.translation.ServerStatus
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -34,7 +36,8 @@ private val logger = KotlinLogging.logger {}
  */
 class TranslatorService(
     private val httpClient: HttpClient,
-    private val configManager: ConfigManager
+    private val configManager: ConfigManager,
+    private val libreTranslateService: LibreTranslateService? = null
 ) {
 
     private var lastResult: Subtitles? = null
@@ -94,6 +97,15 @@ class TranslatorService(
 
         val primaryService = TranslationService.fromString(settings.translation.defaultService)
             ?: TranslationService.LIBRE_TRANSLATE
+
+        // Start local LibreTranslate server if needed
+        if (primaryService == TranslationService.LIBRE_TRANSLATE && libreTranslateService != null) {
+            emit(StageProgress(0f, "Starting local translation server..."))
+            val serverStarted = ensureLocalLibreTranslateRunning()
+            if (!serverStarted) {
+                logger.warn { "Local LibreTranslate server failed to start, will try configured URL" }
+            }
+        }
 
         val fallbackOrder = buildFallbackOrder(primaryService, serviceConfig)
 
@@ -437,7 +449,7 @@ class TranslatorService(
      */
     private fun isServiceConfigured(service: TranslationService, config: TranslationServiceConfig): Boolean {
         return when (service) {
-            TranslationService.LIBRE_TRANSLATE -> !config.libreTranslateUrl.isNullOrBlank()
+            TranslationService.LIBRE_TRANSLATE -> libreTranslateService != null // Local server
             TranslationService.DEEPL -> !config.deeplApiKey.isNullOrBlank()
             TranslationService.OPENAI -> !config.openaiApiKey.isNullOrBlank()
             TranslationService.GOOGLE -> !config.googleApiKey.isNullOrBlank()
@@ -450,8 +462,14 @@ class TranslatorService(
     private fun createBackends(config: TranslationServiceConfig): Map<TranslationService, TranslationBackend> {
         val backends = mutableMapOf<TranslationService, TranslationBackend>()
 
-        if (!config.libreTranslateUrl.isNullOrBlank()) {
-            backends[TranslationService.LIBRE_TRANSLATE] = LibreTranslateBackend(httpClient, config, json)
+        // Use local LibreTranslate server
+        if (libreTranslateService != null &&
+            libreTranslateService.status.value == ServerStatus.RUNNING) {
+            backends[TranslationService.LIBRE_TRANSLATE] = LibreTranslateBackend(
+                httpClient,
+                libreTranslateService.serverUrl,
+                json
+            )
         }
         if (!config.deeplApiKey.isNullOrBlank()) {
             backends[TranslationService.DEEPL] = DeepLBackend(httpClient, config, json)
@@ -464,6 +482,40 @@ class TranslatorService(
         }
 
         return backends
+    }
+
+    /**
+     * Ensures the local LibreTranslate server is running.
+     * Call this before translation if using the local server.
+     */
+    suspend fun ensureLocalLibreTranslateRunning(): Boolean {
+        if (libreTranslateService == null) {
+            return false
+        }
+
+        return when (libreTranslateService.status.value) {
+            ServerStatus.RUNNING -> true
+            ServerStatus.STOPPED, ServerStatus.ERROR -> {
+                logger.info { "Starting local LibreTranslate server..." }
+                libreTranslateService.start()
+            }
+            ServerStatus.STARTING -> {
+                // Wait for startup
+                var attempts = 0
+                while (libreTranslateService.status.value == ServerStatus.STARTING && attempts < 60) {
+                    delay(1000)
+                    attempts++
+                }
+                libreTranslateService.status.value == ServerStatus.RUNNING
+            }
+            ServerStatus.STOPPING -> {
+                // Wait for stop, then start
+                while (libreTranslateService.status.value == ServerStatus.STOPPING) {
+                    delay(500)
+                }
+                libreTranslateService.start()
+            }
+        }
     }
 }
 
@@ -483,11 +535,11 @@ interface TranslationBackend {
 
 /**
  * LibreTranslate backend implementation.
- * Batches by character count, translates one segment at a time.
+ * Uses the local self-hosted LibreTranslate server.
  */
 class LibreTranslateBackend(
     private val httpClient: HttpClient,
-    private val config: TranslationServiceConfig,
+    private val serverUrl: String,
     private val json: Json
 ) : TranslationBackend {
 
@@ -509,20 +561,66 @@ class LibreTranslateBackend(
         val error: String? = null
     )
 
+    @Serializable
+    private data class LanguageInfo(
+        val code: String,
+        val name: String
+    )
+
+    // Cache available languages to avoid repeated API calls
+    private var availableLanguages: Set<String>? = null
+
+    /**
+     * Fetches the list of available languages from LibreTranslate.
+     */
+    private suspend fun fetchAvailableLanguages(): Set<String> {
+        availableLanguages?.let { return it }
+
+        return try {
+            val response = httpClient.get("$serverUrl/languages")
+            if (response.status == HttpStatusCode.OK) {
+                val languages = json.decodeFromString<List<LanguageInfo>>(response.bodyAsText())
+                languages.map { it.code }.toSet().also { availableLanguages = it }
+            } else {
+                emptySet()
+            }
+        } catch (e: Exception) {
+            logger.warn { "Failed to fetch available languages: ${e.message}" }
+            emptySet()
+        }
+    }
+
     override suspend fun translateBatch(
         batch: TranslationBatch,
         sourceLanguage: String,
         targetLanguage: String
     ): TranslationApiResult {
-        val baseUrl = config.libreTranslateUrl ?: return TranslationApiResult.ConfigurationError(
-            "LibreTranslate URL not configured"
-        )
+        // Validate languages are supported
+        val available = fetchAvailableLanguages()
+        if (available.isNotEmpty()) {
+            if (sourceLanguage != "auto" && sourceLanguage !in available) {
+                return TranslationApiResult.ServiceError(
+                    message = "Source language '$sourceLanguage' is not available in LibreTranslate. " +
+                            "Available: ${available.sorted().joinToString(", ")}. " +
+                            "Try restarting the app to download missing language models.",
+                    isRetryable = false
+                )
+            }
+            if (targetLanguage !in available) {
+                return TranslationApiResult.ServiceError(
+                    message = "Target language '$targetLanguage' is not available in LibreTranslate. " +
+                            "Available: ${available.sorted().joinToString(", ")}. " +
+                            "Try restarting the app to download missing language models.",
+                    isRetryable = false
+                )
+            }
+        }
 
         val translations = mutableListOf<String>()
 
         for (text in batch.segments) {
             try {
-                val response = httpClient.post("$baseUrl/translate") {
+                val response = httpClient.post("$serverUrl/translate") {
                     contentType(ContentType.Application.Json)
                     setBody(json.encodeToString(TranslateRequest.serializer(),
                         TranslateRequest(

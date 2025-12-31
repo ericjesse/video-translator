@@ -144,24 +144,246 @@ class UpdateManager(
 
     /**
      * Downloads and installs yt-dlp.
+     * - macOS: Uses Homebrew to get native arm64/x86_64 binaries
+     * - Linux: Uses package managers or downloads from GitHub
+     * - Windows: Downloads from GitHub releases
      */
     fun installYtDlp(): Flow<DownloadProgress> = channelFlow {
-        send(DownloadProgress(0f, "Fetching latest yt-dlp release..."))
+        when (platformPaths.operatingSystem) {
+            OperatingSystem.MACOS -> {
+                // macOS: Use Homebrew to get native architecture binary
+                installYtDlpViaBrew { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+            OperatingSystem.LINUX -> {
+                // Linux: Try package managers first, fall back to download
+                installYtDlpOnLinux { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+            OperatingSystem.WINDOWS -> {
+                // Windows: Download from GitHub
+                installYtDlpFromGitHub { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Installs yt-dlp via Homebrew (macOS only).
+     * This ensures native arm64 binaries on Apple Silicon Macs.
+     */
+    private suspend fun installYtDlpViaBrew(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Checking for Homebrew...")
+
+        val brewPath = findBrewPath()
+        if (brewPath == null) {
+            throw UpdateException(
+                "Homebrew is required to install yt-dlp on macOS. " +
+                "Please install Homebrew from https://brew.sh and try again."
+            )
+        }
+
+        logger.info { "Found Homebrew at: $brewPath" }
+        onProgress(0.1f, "Installing yt-dlp via Homebrew...")
+
+        val process = ProcessBuilder(brewPath, "install", "yt-dlp")
+            .redirectErrorStream(true)
+            .start()
+
+        val reader = process.inputStream.bufferedReader()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            logger.debug { "[brew] $line" }
+            when {
+                line!!.contains("Downloading") -> onProgress(0.3f, "Downloading yt-dlp...")
+                line!!.contains("Pouring") -> onProgress(0.6f, "Installing yt-dlp...")
+                line!!.contains("Caveats") -> onProgress(0.8f, "Finalizing installation...")
+            }
+        }
+
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw UpdateException("Failed to install yt-dlp via Homebrew (exit code: $exitCode)")
+        }
+
+        onProgress(0.9f, "Linking binary...")
+
+        // Find the installed yt-dlp binary
+        val ytDlpBrewPath = findBrewYtDlpPath(brewPath)
+        if (ytDlpBrewPath == null) {
+            throw UpdateException("yt-dlp was installed but binary not found. Try running: brew link yt-dlp")
+        }
+
+        // Create symlink to Homebrew binary (preserves dynamic library dependencies)
+        val targetFile = File(platformPaths.getBinaryPath("yt-dlp"))
+        targetFile.parentFile?.mkdirs()
+
+        Files.deleteIfExists(targetFile.toPath())
+        Files.createSymbolicLink(targetFile.toPath(), Path.of(ytDlpBrewPath))
+        logger.info { "Created symlink: ${targetFile.absolutePath} -> $ytDlpBrewPath" }
+
+        // Get version from the Homebrew binary directly
+        val version = getYtDlpVersion(File(ytDlpBrewPath)) ?: "unknown"
+        val versions = configManager.getInstalledVersions()
+        configManager.saveInstalledVersions(versions.copy(
+            ytDlp = version,
+            ytDlpPath = ytDlpBrewPath
+        ))
+
+        onProgress(1f, "yt-dlp $version installed via Homebrew")
+        logger.info { "yt-dlp $version installed successfully via Homebrew" }
+    }
+
+    /**
+     * Finds the yt-dlp binary installed by Homebrew.
+     */
+    private fun findBrewYtDlpPath(brewPath: String): String? {
+        // Get the Homebrew prefix for yt-dlp
+        val prefixProcess = ProcessBuilder(brewPath, "--prefix", "yt-dlp")
+            .redirectErrorStream(true)
+            .start()
+        val prefix = prefixProcess.inputStream.bufferedReader().readLine()
+        prefixProcess.waitFor()
+
+        // Also check common Homebrew bin directories directly
+        val brewBinDirs = listOf(
+            "/opt/homebrew/bin",  // Apple Silicon
+            "/usr/local/bin"      // Intel Mac
+        )
+
+        val searchDirs = if (prefix.isNullOrBlank()) {
+            brewBinDirs
+        } else {
+            listOf("$prefix/bin") + brewBinDirs
+        }
+
+        for (dir in searchDirs) {
+            val ytDlpFile = File("$dir/yt-dlp")
+            if (ytDlpFile.exists() && ytDlpFile.canExecute()) {
+                logger.debug { "Found yt-dlp at: ${ytDlpFile.absolutePath}" }
+                return ytDlpFile.absolutePath
+            }
+        }
+
+        logger.warn { "Could not find yt-dlp binary. Prefix: $prefix, searched: $searchDirs" }
+        return null
+    }
+
+    /**
+     * Installs yt-dlp on Linux using package managers or downloading from GitHub.
+     */
+    private suspend fun installYtDlpOnLinux(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Detecting package manager...")
+
+        // Try Linuxbrew first if available
+        val brewPath = findBrewPath()
+        if (brewPath != null) {
+            logger.info { "Found Linuxbrew, using it to install yt-dlp" }
+            installYtDlpViaBrew(onProgress)
+            return
+        }
+
+        // Try system package managers
+        val packageManager = detectLinuxPackageManagerForYtDlp()
+        if (packageManager != null) {
+            onProgress(0.1f, "Installing yt-dlp via ${packageManager.name}...")
+            logger.info { "Using ${packageManager.name} to install yt-dlp" }
+
+            val process = ProcessBuilder(*packageManager.installCommand.toTypedArray())
+                .redirectErrorStream(true)
+                .start()
+
+            val reader = process.inputStream.bufferedReader()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                logger.debug { "[${packageManager.name}] $line" }
+            }
+
+            val exitCode = process.waitFor()
+            if (exitCode == 0) {
+                onProgress(0.9f, "Locating yt-dlp binary...")
+
+                val ytDlpPath = findSystemBinaryPath("yt-dlp")
+                if (ytDlpPath != null) {
+                    val targetFile = File(platformPaths.getBinaryPath("yt-dlp"))
+                    targetFile.parentFile?.mkdirs()
+
+                    // Create symlink to system binary (preserves dynamic library dependencies)
+                    Files.deleteIfExists(targetFile.toPath())
+                    Files.createSymbolicLink(targetFile.toPath(), Path.of(ytDlpPath))
+                    logger.info { "Created symlink: ${targetFile.absolutePath} -> $ytDlpPath" }
+
+                    val version = getYtDlpVersion(File(ytDlpPath)) ?: "unknown"
+                    val versions = configManager.getInstalledVersions()
+                    configManager.saveInstalledVersions(versions.copy(
+                        ytDlp = version,
+                        ytDlpPath = ytDlpPath
+                    ))
+
+                    onProgress(1f, "yt-dlp $version installed via ${packageManager.name}")
+                    logger.info { "yt-dlp installed successfully via ${packageManager.name}" }
+                    return
+                }
+            }
+            // Fall through to GitHub download if package manager fails
+            logger.warn { "Package manager installation failed, falling back to GitHub download" }
+        }
+
+        // Fall back to GitHub download
+        installYtDlpFromGitHub(onProgress)
+    }
+
+    /**
+     * Detects available Linux package manager for yt-dlp installation.
+     */
+    private fun detectLinuxPackageManagerForYtDlp(): LinuxPackageManager? {
+        val packageManagers = listOf(
+            LinuxPackageManager("apt", listOf("apt", "install", "-y", "yt-dlp")),
+            LinuxPackageManager("dnf", listOf("dnf", "install", "-y", "yt-dlp")),
+            LinuxPackageManager("pacman", listOf("pacman", "-S", "--noconfirm", "yt-dlp")),
+            LinuxPackageManager("zypper", listOf("zypper", "install", "-y", "yt-dlp")),
+            LinuxPackageManager("apk", listOf("apk", "add", "yt-dlp"))
+        )
+
+        for (pm in packageManagers) {
+            if (isCommandAvailable(pm.name)) {
+                logger.debug { "Found package manager for yt-dlp: ${pm.name}" }
+                return pm
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Downloads and installs yt-dlp from GitHub releases.
+     */
+    private suspend fun installYtDlpFromGitHub(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Fetching latest yt-dlp release...")
 
         val release = getLatestRelease(YTDLP_REPO)
         val downloadUrl = getYtDlpDownloadUrl(release)
         val tempFile = File(platformPaths.cacheDir, "yt-dlp.tmp")
         val targetFile = File(platformPaths.getBinaryPath("yt-dlp"))
 
-        send(DownloadProgress(0.05f, "Downloading yt-dlp ${release.tagName}..."))
+        onProgress(0.05f, "Downloading yt-dlp ${release.tagName}...")
 
         downloadFileWithRetry(
             url = downloadUrl,
             tempFile = tempFile,
             targetFile = targetFile,
-            expectedChecksum = null // yt-dlp provides checksums in separate files
+            expectedChecksum = null
         ) { progress, message ->
-            send(DownloadProgress(0.05f + progress * 0.9f, message))
+            onProgress(0.05f + progress * 0.9f, message)
         }
 
         // Make executable on Unix
@@ -174,15 +396,342 @@ class UpdateManager(
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(ytDlp = release.tagName))
 
-        send(DownloadProgress(1f, "yt-dlp ${release.tagName} installed"))
+        onProgress(1f, "yt-dlp ${release.tagName} installed")
         logger.info { "yt-dlp ${release.tagName} installed successfully" }
-    }.flowOn(Dispatchers.IO)
+    }
+
+    /**
+     * Gets the installed yt-dlp version.
+     */
+    private fun getYtDlpVersion(file: File): String? {
+        return try {
+            val process = ProcessBuilder(file.absolutePath, "--version")
+                .redirectErrorStream(true)
+                .start()
+            val version = process.inputStream.bufferedReader().readLine()
+            process.waitFor()
+            if (process.exitValue() == 0) version?.trim() else null
+        } catch (e: Exception) {
+            logger.debug { "Could not get yt-dlp version: ${e.message}" }
+            null
+        }
+    }
 
     /**
      * Downloads and installs FFmpeg.
+     * - macOS: Uses Homebrew to get native arm64/x86_64 binaries
+     * - Linux: Uses package managers (apt, dnf, pacman) or Homebrew
+     * - Windows: Downloads pre-built binaries from the web
      */
     fun installFfmpeg(): Flow<DownloadProgress> = channelFlow {
-        send(DownloadProgress(0f, "Fetching FFmpeg..."))
+        when (platformPaths.operatingSystem) {
+            OperatingSystem.MACOS -> {
+                // macOS: Use Homebrew to get native architecture binaries
+                installFfmpegViaBrew { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+            OperatingSystem.LINUX -> {
+                // Linux: Use package managers or Homebrew
+                installFfmpegOnLinux { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+            OperatingSystem.WINDOWS -> {
+                // Windows: Download pre-built binaries
+                installFfmpegFromWeb { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Installs FFmpeg via Homebrew (macOS only).
+     * This ensures native arm64 binaries on Apple Silicon Macs.
+     */
+    private suspend fun installFfmpegViaBrew(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Checking for Homebrew...")
+
+        // Check if brew is available
+        val brewPath = findBrewPath()
+        if (brewPath == null) {
+            throw UpdateException(
+                "Homebrew is required to install FFmpeg on macOS. " +
+                "Please install Homebrew from https://brew.sh and try again."
+            )
+        }
+
+        logger.info { "Found Homebrew at: $brewPath" }
+        onProgress(0.1f, "Installing FFmpeg via Homebrew...")
+
+        // Install ffmpeg via brew
+        val process = ProcessBuilder(brewPath, "install", "ffmpeg")
+            .redirectErrorStream(true)
+            .start()
+
+        // Read output for progress updates
+        val reader = process.inputStream.bufferedReader()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            logger.debug { "[brew] $line" }
+            // Update progress based on output
+            when {
+                line!!.contains("Downloading") -> onProgress(0.3f, "Downloading FFmpeg...")
+                line!!.contains("Pouring") -> onProgress(0.6f, "Installing FFmpeg...")
+                line!!.contains("Caveats") -> onProgress(0.8f, "Finalizing installation...")
+            }
+        }
+
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw UpdateException("Failed to install FFmpeg via Homebrew (exit code: $exitCode)")
+        }
+
+        onProgress(0.9f, "Linking binaries...")
+
+        // Find the installed FFmpeg binaries
+        val (ffmpegBrewPath, ffprobeBrewPath) = findBrewFfmpegPaths(brewPath)
+        if (ffmpegBrewPath == null) {
+            throw UpdateException("FFmpeg was installed but binary not found. Try running: brew link ffmpeg")
+        }
+
+        // Create symlinks to Homebrew binaries (preserves dynamic library dependencies)
+        val ffmpegTarget = File(platformPaths.getBinaryPath("ffmpeg"))
+        val ffprobeTarget = File(platformPaths.getBinaryPath("ffprobe"))
+        ffmpegTarget.parentFile?.mkdirs()
+
+        // Delete existing files/symlinks before creating new symlinks
+        Files.deleteIfExists(ffmpegTarget.toPath())
+        Files.createSymbolicLink(ffmpegTarget.toPath(), Path.of(ffmpegBrewPath))
+        logger.info { "Created symlink: ${ffmpegTarget.absolutePath} -> $ffmpegBrewPath" }
+
+        if (ffprobeBrewPath != null) {
+            Files.deleteIfExists(ffprobeTarget.toPath())
+            Files.createSymbolicLink(ffprobeTarget.toPath(), Path.of(ffprobeBrewPath))
+            logger.info { "Created symlink: ${ffprobeTarget.absolutePath} -> $ffprobeBrewPath" }
+        }
+
+        // Get version from the Homebrew binary directly
+        val version = getFfmpegVersion(File(ffmpegBrewPath)) ?: "unknown"
+        val versions = configManager.getInstalledVersions()
+        configManager.saveInstalledVersions(versions.copy(
+            ffmpeg = version,
+            ffmpegPath = ffmpegBrewPath,
+            ffprobePath = ffprobeBrewPath
+        ))
+
+        onProgress(1f, "FFmpeg $version installed via Homebrew")
+        logger.info { "FFmpeg $version installed successfully via Homebrew" }
+    }
+
+    /**
+     * Finds the FFmpeg and FFprobe binaries installed by Homebrew.
+     * Returns a pair of (ffmpegPath, ffprobePath), where ffprobePath may be null.
+     */
+    private fun findBrewFfmpegPaths(brewPath: String): Pair<String?, String?> {
+        // Get the Homebrew prefix for ffmpeg
+        val prefixProcess = ProcessBuilder(brewPath, "--prefix", "ffmpeg")
+            .redirectErrorStream(true)
+            .start()
+        val prefix = prefixProcess.inputStream.bufferedReader().readLine()
+        prefixProcess.waitFor()
+
+        // Also check common Homebrew bin directories directly
+        val brewBinDirs = listOf(
+            "/opt/homebrew/bin",  // Apple Silicon
+            "/usr/local/bin"      // Intel Mac
+        )
+
+        val searchDirs = if (prefix.isNullOrBlank()) {
+            brewBinDirs
+        } else {
+            listOf("$prefix/bin") + brewBinDirs
+        }
+
+        var ffmpegPath: String? = null
+        var ffprobePath: String? = null
+
+        for (dir in searchDirs) {
+            val ffmpegFile = File("$dir/ffmpeg")
+            val ffprobeFile = File("$dir/ffprobe")
+
+            if (ffmpegFile.exists() && ffmpegFile.canExecute()) {
+                ffmpegPath = ffmpegFile.absolutePath
+                logger.debug { "Found ffmpeg at: $ffmpegPath" }
+            }
+            if (ffprobeFile.exists() && ffprobeFile.canExecute()) {
+                ffprobePath = ffprobeFile.absolutePath
+                logger.debug { "Found ffprobe at: $ffprobePath" }
+            }
+
+            if (ffmpegPath != null && ffprobePath != null) break
+        }
+
+        // Log what we found for debugging
+        if (ffmpegPath == null) {
+            logger.warn { "Could not find ffmpeg binary. Prefix: $prefix, searched: $searchDirs" }
+        }
+
+        return Pair(ffmpegPath, ffprobePath)
+    }
+
+    /**
+     * Installs FFmpeg on Linux using package managers or Homebrew.
+     */
+    private suspend fun installFfmpegOnLinux(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Detecting package manager...")
+
+        // Try Linuxbrew first if available
+        val brewPath = findBrewPath()
+        if (brewPath != null) {
+            logger.info { "Found Linuxbrew, using it to install FFmpeg" }
+            installFfmpegViaBrew(onProgress)
+            return
+        }
+
+        // Detect Linux package manager
+        val packageManager = detectLinuxPackageManagerForFfmpeg()
+
+        if (packageManager != null) {
+            onProgress(0.1f, "Installing FFmpeg via ${packageManager.name}...")
+            logger.info { "Using ${packageManager.name} to install FFmpeg" }
+
+            val process = ProcessBuilder(*packageManager.installCommand.toTypedArray())
+                .redirectErrorStream(true)
+                .start()
+
+            val reader = process.inputStream.bufferedReader()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                logger.debug { "[${packageManager.name}] $line" }
+                when {
+                    line!!.contains("Downloading", ignoreCase = true) ||
+                    line!!.contains("Get:", ignoreCase = true) ->
+                        onProgress(0.3f, "Downloading FFmpeg...")
+                    line!!.contains("Unpacking", ignoreCase = true) ||
+                    line!!.contains("Installing", ignoreCase = true) ->
+                        onProgress(0.6f, "Installing FFmpeg...")
+                    line!!.contains("Setting up", ignoreCase = true) ||
+                    line!!.contains("running", ignoreCase = true) ->
+                        onProgress(0.8f, "Finalizing installation...")
+                }
+            }
+
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                throw UpdateException(
+                    "Failed to install FFmpeg via ${packageManager.name} (exit code: $exitCode). " +
+                    "You may need to run: sudo ${packageManager.installCommand.joinToString(" ")}"
+                )
+            }
+
+            onProgress(0.9f, "Locating FFmpeg binaries...")
+
+            // Find the installed binaries
+            val ffmpegPath = findSystemBinaryPath("ffmpeg")
+            val ffprobePath = findSystemBinaryPath("ffprobe")
+
+            if (ffmpegPath == null) {
+                throw UpdateException(
+                    "FFmpeg was installed but binary not found. " +
+                    "Try running: which ffmpeg"
+                )
+            }
+
+            // Create symlinks to system binaries (preserves dynamic library dependencies)
+            val ffmpegTarget = File(platformPaths.getBinaryPath("ffmpeg"))
+            val ffprobeTarget = File(platformPaths.getBinaryPath("ffprobe"))
+            ffmpegTarget.parentFile?.mkdirs()
+
+            Files.deleteIfExists(ffmpegTarget.toPath())
+            Files.createSymbolicLink(ffmpegTarget.toPath(), Path.of(ffmpegPath))
+            logger.info { "Created symlink: ${ffmpegTarget.absolutePath} -> $ffmpegPath" }
+
+            if (ffprobePath != null) {
+                Files.deleteIfExists(ffprobeTarget.toPath())
+                Files.createSymbolicLink(ffprobeTarget.toPath(), Path.of(ffprobePath))
+                logger.info { "Created symlink: ${ffprobeTarget.absolutePath} -> $ffprobePath" }
+            }
+
+            val version = getFfmpegVersion(File(ffmpegPath)) ?: "unknown"
+            val versions = configManager.getInstalledVersions()
+            configManager.saveInstalledVersions(versions.copy(
+                ffmpeg = version,
+                ffmpegPath = ffmpegPath,
+                ffprobePath = ffprobePath
+            ))
+
+            onProgress(1f, "FFmpeg $version installed via ${packageManager.name}")
+            logger.info { "FFmpeg installed successfully via ${packageManager.name}" }
+            return
+        }
+
+        // No package manager found - provide instructions
+        throw UpdateException(
+            "Could not automatically install FFmpeg on Linux. Please install manually:\n\n" +
+            "Ubuntu/Debian: sudo apt install ffmpeg\n" +
+            "Fedora/RHEL: sudo dnf install ffmpeg\n" +
+            "Arch Linux: sudo pacman -S ffmpeg\n" +
+            "Or install Homebrew and run: brew install ffmpeg"
+        )
+    }
+
+    /**
+     * Detects available Linux package manager for FFmpeg installation.
+     */
+    private fun detectLinuxPackageManagerForFfmpeg(): LinuxPackageManager? {
+        // Package managers in order of preference
+        val packageManagers = listOf(
+            LinuxPackageManager("apt", listOf("apt", "install", "-y", "ffmpeg")),
+            LinuxPackageManager("dnf", listOf("dnf", "install", "-y", "ffmpeg")),
+            LinuxPackageManager("yum", listOf("yum", "install", "-y", "ffmpeg")),
+            LinuxPackageManager("pacman", listOf("pacman", "-S", "--noconfirm", "ffmpeg")),
+            LinuxPackageManager("zypper", listOf("zypper", "install", "-y", "ffmpeg")),
+            LinuxPackageManager("apk", listOf("apk", "add", "ffmpeg"))
+        )
+
+        for (pm in packageManagers) {
+            if (isCommandAvailable(pm.name)) {
+                logger.debug { "Found package manager: ${pm.name}" }
+                return pm
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Finds a binary in the system PATH.
+     */
+    private fun findSystemBinaryPath(binaryName: String): String? {
+        return try {
+            val process = ProcessBuilder("which", binaryName)
+                .redirectErrorStream(true)
+                .start()
+            val result = process.inputStream.bufferedReader().readLine()
+            process.waitFor()
+            if (process.exitValue() == 0 && result?.isNotBlank() == true) {
+                logger.debug { "Found $binaryName in PATH: $result" }
+                result.trim()
+            } else null
+        } catch (e: Exception) {
+            logger.debug { "Could not find $binaryName in PATH: ${e.message}" }
+            null
+        }
+    }
+
+    /**
+     * Downloads and installs FFmpeg from the web (Windows only).
+     */
+    private suspend fun installFfmpegFromWeb(
+        onProgress: suspend (Float, String) -> Unit
+    ) {
+        onProgress(0f, "Fetching FFmpeg...")
 
         val downloadUrl = getFfmpegDownloadUrl()
         val archiveExtension = if (platformPaths.operatingSystem == OperatingSystem.LINUX) ".tar.xz" else ".zip"
@@ -190,7 +739,7 @@ class UpdateManager(
         val archiveFile = File(platformPaths.cacheDir, "ffmpeg$archiveExtension")
         val extractDir = File(platformPaths.cacheDir, "ffmpeg-extract")
 
-        send(DownloadProgress(0.05f, "Downloading FFmpeg..."))
+        onProgress(0.05f, "Downloading FFmpeg...")
 
         downloadFileWithRetry(
             url = downloadUrl,
@@ -198,10 +747,10 @@ class UpdateManager(
             targetFile = archiveFile,
             expectedChecksum = null
         ) { progress, message ->
-            send(DownloadProgress(0.05f + progress * 0.65f, message))
+            onProgress(0.05f + progress * 0.65f, message)
         }
 
-        send(DownloadProgress(0.7f, "Extracting FFmpeg..."))
+        onProgress(0.7f, "Extracting FFmpeg...")
 
         // Clean up existing extraction directory
         if (extractDir.exists()) {
@@ -217,11 +766,11 @@ class UpdateManager(
         ) { progress ->
             val extractProgress = progress.percentage
             if (extractProgress >= 0) {
-                send(DownloadProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}"))
+                onProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}")
             }
         }
 
-        send(DownloadProgress(0.9f, "Installing FFmpeg binaries..."))
+        onProgress(0.9f, "Installing FFmpeg binaries...")
 
         // Find and install the binaries
         val (ffmpegPath, ffprobePath) = archiveExtractor.findFfmpegBinaries(extractionResult.extractedPath)
@@ -259,9 +808,9 @@ class UpdateManager(
         val versions = configManager.getInstalledVersions()
         configManager.saveInstalledVersions(versions.copy(ffmpeg = version))
 
-        send(DownloadProgress(1f, "FFmpeg $version installed"))
+        onProgress(1f, "FFmpeg $version installed")
         logger.info { "FFmpeg $version installed successfully" }
-    }.flowOn(Dispatchers.IO)
+    }
 
     /**
      * Downloads a Whisper model with checksum verification.
@@ -374,24 +923,21 @@ class UpdateManager(
             throw UpdateException("whisper-cpp was installed but binary not found. Try running: brew link whisper-cpp")
         }
 
-        // Create symlink or copy to our bin directory
+        // Create symlink to Homebrew binary (preserves dynamic library dependencies)
         val whisperTarget = File(platformPaths.getBinaryPath("whisper"))
         whisperTarget.parentFile?.mkdirs()
 
-        // Copy the binary to our location
-        Files.copy(
-            Path.of(whisperBrewPath),
-            whisperTarget.toPath(),
-            StandardCopyOption.REPLACE_EXISTING
-        )
-        whisperTarget.setExecutable(true)
+        Files.deleteIfExists(whisperTarget.toPath())
+        Files.createSymbolicLink(whisperTarget.toPath(), Path.of(whisperBrewPath))
+        logger.info { "Created symlink: ${whisperTarget.absolutePath} -> $whisperBrewPath" }
 
-        logger.info { "Installed whisper to ${whisperTarget.absolutePath}" }
-
-        // Get version
-        val version = getWhisperVersion(whisperTarget) ?: "unknown"
+        // Get version from the Homebrew binary directly
+        val version = getWhisperVersion(File(whisperBrewPath)) ?: "unknown"
         val versions = configManager.getInstalledVersions()
-        configManager.saveInstalledVersions(versions.copy(whisperCpp = version))
+        configManager.saveInstalledVersions(versions.copy(
+            whisperCpp = version,
+            whisperPath = whisperBrewPath
+        ))
 
         onProgress(1f, "whisper.cpp $version installed via Homebrew")
         logger.info { "whisper.cpp $version installed successfully via Homebrew" }
@@ -531,7 +1077,7 @@ class UpdateManager(
         }
 
         // Try to find a system package manager
-        val packageManager = detectLinuxPackageManager()
+        val packageManager = detectLinuxPackageManagerForWhisper()
 
         if (packageManager != null) {
             onProgress(0.1f, "Installing whisper.cpp via ${packageManager.name}...")
@@ -573,21 +1119,21 @@ class UpdateManager(
                     )
                 }
 
-                onProgress(0.9f, "Copying binary...")
+                onProgress(0.9f, "Linking binary...")
 
-                // Copy to our bin directory
+                // Create symlink to system binary (preserves dynamic library dependencies)
                 val whisperTarget = File(platformPaths.getBinaryPath("whisper"))
                 whisperTarget.parentFile?.mkdirs()
-                Files.copy(
-                    Path.of(whisperPath),
-                    whisperTarget.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING
-                )
-                whisperTarget.setExecutable(true)
+                Files.deleteIfExists(whisperTarget.toPath())
+                Files.createSymbolicLink(whisperTarget.toPath(), Path.of(whisperPath))
+                logger.info { "Created symlink: ${whisperTarget.absolutePath} -> $whisperPath" }
 
-                val version = getWhisperVersion(whisperTarget) ?: "unknown"
+                val version = getWhisperVersion(File(whisperPath)) ?: "unknown"
                 val versions = configManager.getInstalledVersions()
-                configManager.saveInstalledVersions(versions.copy(whisperCpp = version))
+                configManager.saveInstalledVersions(versions.copy(
+                    whisperCpp = version,
+                    whisperPath = whisperPath
+                ))
 
                 onProgress(1f, "whisper.cpp $version installed")
                 logger.info { "whisper.cpp installed successfully via ${packageManager.name}" }
@@ -605,10 +1151,13 @@ class UpdateManager(
         throw UpdateException(
             "Could not automatically install whisper.cpp on Linux. Please install manually:\n\n" +
             "Option 1: Install Homebrew and run: brew install whisper-cpp\n" +
-            "Option 2: Build from source:\n" +
+            "Option 2: Use your package manager (if available):\n" +
+            "  Arch Linux: sudo pacman -S whisper.cpp\n" +
+            "  Fedora: sudo dnf install whisper-cpp\n" +
+            "Option 3: Build from source:\n" +
             "  git clone https://github.com/ggerganov/whisper.cpp.git\n" +
             "  cd whisper.cpp && make\n" +
-            "  cp main ~/Library/Application\\ Support/VideoTranslator/bin/whisper"
+            "  cp main ~/.local/share/VideoTranslator/bin/whisper"
         )
     }
 
@@ -621,19 +1170,28 @@ class UpdateManager(
     )
 
     /**
-     * Detects available Linux package manager.
+     * Detects available Linux package manager for whisper.cpp installation.
+     * Note: whisper.cpp may not be available in all package managers.
      */
-    private fun detectLinuxPackageManager(): LinuxPackageManager? {
-        // Check for various package managers
+    private fun detectLinuxPackageManagerForWhisper(): LinuxPackageManager? {
+        // Package managers in order of preference
+        // Note: whisper.cpp package names vary by distro
         val packageManagers = listOf(
-            // Flatpak (universal)
-            LinuxPackageManager("flatpak", listOf("flatpak", "install", "-y", "flathub", "io.github.ggerganov.whisper")),
-            // Note: whisper.cpp may not be in all package managers, these are aspirational
+            // Arch Linux AUR (whisper.cpp is available)
+            LinuxPackageManager("pacman", listOf("pacman", "-S", "--noconfirm", "whisper.cpp")),
+            // Fedora/RHEL (if available in repos)
+            LinuxPackageManager("dnf", listOf("dnf", "install", "-y", "whisper-cpp")),
+            // Ubuntu/Debian (if available in repos)
+            LinuxPackageManager("apt", listOf("apt", "install", "-y", "whisper.cpp")),
+            // openSUSE
+            LinuxPackageManager("zypper", listOf("zypper", "install", "-y", "whisper-cpp")),
+            // Alpine
+            LinuxPackageManager("apk", listOf("apk", "add", "whisper-cpp"))
         )
 
         for (pm in packageManagers) {
-            val pmName = pm.installCommand.first()
-            if (isCommandAvailable(pmName)) {
+            if (isCommandAvailable(pm.name)) {
+                logger.debug { "Found package manager for whisper: ${pm.name}" }
                 return pm
             }
         }
@@ -758,6 +1316,11 @@ class UpdateManager(
         // Make executable on Unix
         if (platformPaths.operatingSystem != OperatingSystem.WINDOWS) {
             whisperTarget.setExecutable(true)
+
+            // Remove macOS quarantine attribute
+            if (platformPaths.operatingSystem == OperatingSystem.MACOS) {
+                removeQuarantineAttribute(whisperTarget)
+            }
         }
 
         // Cleanup
@@ -771,6 +1334,252 @@ class UpdateManager(
         onProgress(1f, "whisper.cpp ${release.tagName} installed")
         logger.info { "whisper.cpp ${release.tagName} installed successfully" }
     }
+
+    // ========== LibreTranslate Installation ==========
+
+    /**
+     * Installs LibreTranslate in a Python virtual environment.
+     * Requires Python 3.8+ to be installed on the system.
+     */
+    fun installLibreTranslate(): Flow<DownloadProgress> = channelFlow {
+        send(DownloadProgress(0f, "Checking Python installation..."))
+
+        val pythonPath = findPythonPath()
+        if (pythonPath == null) {
+            throw UpdateException(
+                "Python 3.8+ is required to install LibreTranslate. " +
+                "Please install Python from https://python.org and try again."
+            )
+        }
+
+        logger.info { "Found Python at: $pythonPath" }
+        send(DownloadProgress(0.05f, "Creating virtual environment..."))
+
+        val venvDir = File(platformPaths.libreTranslateDir, "venv")
+        val venvPython = getVenvPythonPath(venvDir)
+        val venvPip = getVenvPipPath(venvDir)
+
+        // Create virtual environment if it doesn't exist
+        if (!venvDir.exists()) {
+            val venvResult = runCommand(listOf(pythonPath, "-m", "venv", venvDir.absolutePath))
+            if (!venvResult.success) {
+                throw UpdateException("Failed to create virtual environment: ${venvResult.error}")
+            }
+            logger.info { "Created virtual environment at: ${venvDir.absolutePath}" }
+        }
+
+        send(DownloadProgress(0.15f, "Upgrading pip..."))
+
+        // Upgrade pip first
+        val pipUpgradeResult = runCommand(listOf(venvPython, "-m", "pip", "install", "--upgrade", "pip"))
+        if (!pipUpgradeResult.success) {
+            logger.warn { "pip upgrade warning: ${pipUpgradeResult.error}" }
+        }
+
+        send(DownloadProgress(0.20f, "Installing LibreTranslate (this may take several minutes)..."))
+
+        // Install libretranslate and certifi (for SSL certificate verification)
+        val installResult = runCommand(
+            listOf(venvPip, "install", "libretranslate", "certifi"),
+            timeoutMinutes = 15  // Can take a while due to dependencies
+        )
+        if (!installResult.success) {
+            throw UpdateException("Failed to install LibreTranslate: ${installResult.error}")
+        }
+
+        send(DownloadProgress(0.85f, "Verifying installation..."))
+
+        // Verify installation and get version
+        val versionResult = runCommand(listOf(venvPip, "show", "libretranslate"))
+        val version = if (versionResult.success) {
+            val versionLine = versionResult.output.lines().find { it.startsWith("Version:") }
+            versionLine?.substringAfter("Version:")?.trim() ?: "unknown"
+        } else {
+            "unknown"
+        }
+
+        logger.info { "LibreTranslate $version installed successfully" }
+
+        // Save installed version
+        val versions = configManager.getInstalledVersions()
+        configManager.saveInstalledVersions(versions.copy(libreTranslate = version))
+
+        send(DownloadProgress(1f, "LibreTranslate $version installed"))
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Checks if LibreTranslate is installed.
+     */
+    fun isLibreTranslateInstalled(): Boolean {
+        val venvDir = File(platformPaths.libreTranslateDir, "venv")
+        val venvPython = getVenvPythonPath(File(platformPaths.libreTranslateDir, "venv"))
+
+        if (!File(venvPython).exists()) {
+            return false
+        }
+
+        return try {
+            val result = runCommand(listOf(venvPython, "-c", "import libretranslate; print('ok')"))
+            result.success && result.output.contains("ok")
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Gets the installed LibreTranslate version.
+     */
+    fun getLibreTranslateVersion(): String? {
+        val venvPip = getVenvPipPath(File(platformPaths.libreTranslateDir, "venv"))
+
+        if (!File(venvPip).exists()) {
+            return null
+        }
+
+        return try {
+            val result = runCommand(listOf(venvPip, "show", "libretranslate"))
+            if (result.success) {
+                result.output.lines()
+                    .find { it.startsWith("Version:") }
+                    ?.substringAfter("Version:")
+                    ?.trim()
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Checks for LibreTranslate updates via pip.
+     */
+    suspend fun checkLibreTranslateUpdate(): String? {
+        val venvPip = getVenvPipPath(File(platformPaths.libreTranslateDir, "venv"))
+
+        if (!File(venvPip).exists()) {
+            return null
+        }
+
+        return try {
+            val result = runCommand(listOf(venvPip, "list", "--outdated", "--format=json"))
+            if (result.success) {
+                val outdated = json.decodeFromString<List<PipOutdatedPackage>>(result.output)
+                outdated.find { it.name == "libretranslate" }?.latestVersion
+            } else null
+        } catch (e: Exception) {
+            logger.debug { "Failed to check LibreTranslate updates: ${e.message}" }
+            null
+        }
+    }
+
+    /**
+     * Finds Python 3.8+ installation.
+     */
+    private fun findPythonPath(): String? {
+        val pythonCommands = when (platformPaths.operatingSystem) {
+            OperatingSystem.WINDOWS -> listOf("python", "python3", "py")
+            else -> listOf("python3", "python")
+        }
+
+        for (cmd in pythonCommands) {
+            try {
+                val process = ProcessBuilder(cmd, "--version")
+                    .redirectErrorStream(true)
+                    .start()
+                val output = process.inputStream.bufferedReader().readText()
+                process.waitFor()
+
+                if (process.exitValue() == 0) {
+                    // Parse version (e.g., "Python 3.11.2")
+                    val versionRegex = Regex("Python (\\d+)\\.(\\d+)")
+                    val match = versionRegex.find(output)
+                    if (match != null) {
+                        val major = match.groupValues[1].toIntOrNull() ?: 0
+                        val minor = match.groupValues[2].toIntOrNull() ?: 0
+                        if (major >= 3 && minor >= 8) {
+                            // Get full path
+                            val whichProcess = ProcessBuilder(
+                                if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) "where" else "which",
+                                cmd
+                            ).redirectErrorStream(true).start()
+                            val path = whichProcess.inputStream.bufferedReader().readLine()
+                            whichProcess.waitFor()
+                            if (path?.isNotBlank() == true) {
+                                return path.trim()
+                            }
+                            return cmd
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                continue
+            }
+        }
+        return null
+    }
+
+    /**
+     * Gets Python path within a virtual environment.
+     */
+    private fun getVenvPythonPath(venvDir: File): String {
+        return when (platformPaths.operatingSystem) {
+            OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Scripts\\python.exe"
+            else -> "${venvDir.absolutePath}/bin/python"
+        }
+    }
+
+    /**
+     * Gets pip path within a virtual environment.
+     */
+    private fun getVenvPipPath(venvDir: File): String {
+        return when (platformPaths.operatingSystem) {
+            OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Scripts\\pip.exe"
+            else -> "${venvDir.absolutePath}/bin/pip"
+        }
+    }
+
+    /**
+     * Runs a command and returns the result.
+     */
+    private fun runCommand(
+        command: List<String>,
+        timeoutMinutes: Int = 5
+    ): CommandResult {
+        return try {
+            val process = ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
+
+            val output = process.inputStream.bufferedReader().readText()
+            val completed = process.waitFor(timeoutMinutes.toLong(), java.util.concurrent.TimeUnit.MINUTES)
+
+            if (!completed) {
+                process.destroyForcibly()
+                CommandResult(false, "", "Command timed out after $timeoutMinutes minutes")
+            } else {
+                CommandResult(
+                    success = process.exitValue() == 0,
+                    output = output,
+                    error = if (process.exitValue() != 0) output else ""
+                )
+            }
+        } catch (e: Exception) {
+            CommandResult(false, "", e.message ?: "Unknown error")
+        }
+    }
+
+    private data class CommandResult(
+        val success: Boolean,
+        val output: String,
+        val error: String
+    )
+
+    @Serializable
+    private data class PipOutdatedPackage(
+        val name: String,
+        val version: String,
+        @SerialName("latest_version")
+        val latestVersion: String
+    )
 
     // ========== Dependency Updates ==========
 
@@ -800,10 +1609,18 @@ class UpdateManager(
             null
         }
 
+        val libreTranslateUpdate = try {
+            checkLibreTranslateUpdate()
+        } catch (e: Exception) {
+            logger.debug { "Failed to check LibreTranslate updates: ${e.message}" }
+            null
+        }
+
         return DependencyUpdates(
             ytDlpAvailable = ytDlpUpdate,
             ffmpegAvailable = null, // FFmpeg doesn't have a consistent version API
-            whisperCppAvailable = whisperCppUpdate
+            whisperCppAvailable = whisperCppUpdate,
+            libreTranslateAvailable = libreTranslateUpdate
         )
     }
 
@@ -881,6 +1698,7 @@ class UpdateManager(
 
     /**
      * Downloads a file with resume support using HTTP Range headers.
+     * Uses streaming to avoid loading the entire file into memory.
      */
     private suspend fun downloadFileWithResume(
         url: String,
@@ -906,43 +1724,44 @@ class UpdateManager(
             0L
         }
 
-        // Make the actual download request
-        val response = httpClient.get(url) {
+        // Use prepareGet + execute pattern to enable true streaming without buffering
+        // This is critical for large files (Whisper models can be up to 3GB)
+        httpClient.prepareGet(url) {
             if (startByte > 0) {
                 header(HttpHeaders.Range, "bytes=$startByte-")
             }
-        }
+        }.execute { response ->
+            // Verify we got the expected response
+            val expectedStatus = if (startByte > 0) HttpStatusCode.PartialContent else HttpStatusCode.OK
+            if (response.status != expectedStatus && response.status != HttpStatusCode.OK) {
+                throw UpdateException("Unexpected HTTP status: ${response.status}")
+            }
 
-        // Verify we got the expected response
-        val expectedStatus = if (startByte > 0) HttpStatusCode.PartialContent else HttpStatusCode.OK
-        if (response.status != expectedStatus && response.status != HttpStatusCode.OK) {
-            throw UpdateException("Unexpected HTTP status: ${response.status}")
-        }
+            val totalSize = if (startByte > 0) {
+                // For resumed downloads, total is existing + remaining
+                startByte + (response.contentLength() ?: (contentLength - startByte))
+            } else {
+                response.contentLength() ?: contentLength
+            }
 
-        val totalSize = if (startByte > 0) {
-            // For resumed downloads, total is existing + remaining
-            startByte + (response.contentLength() ?: (contentLength - startByte))
-        } else {
-            response.contentLength() ?: contentLength
-        }
+            // Open file for writing (append if resuming)
+            RandomAccessFile(targetFile, "rw").use { raf ->
+                raf.seek(startByte)
 
-        // Open file for writing (append if resuming)
-        RandomAccessFile(targetFile, "rw").use { raf ->
-            raf.seek(startByte)
+                val channel = response.bodyAsChannel()
+                val buffer = ByteArray(BUFFER_SIZE)
+                var totalRead = startByte
 
-            val channel = response.bodyAsChannel()
-            val buffer = ByteArray(BUFFER_SIZE)
-            var totalRead = startByte
+                while (!channel.isClosedForRead) {
+                    val read = channel.readAvailable(buffer)
+                    if (read <= 0) break
 
-            while (!channel.isClosedForRead) {
-                val read = channel.readAvailable(buffer)
-                if (read <= 0) break
+                    raf.write(buffer, 0, read)
+                    totalRead += read
 
-                raf.write(buffer, 0, read)
-                totalRead += read
-
-                if (totalSize > 0) {
-                    onProgress(totalRead.toFloat() / totalSize)
+                    if (totalSize > 0) {
+                        onProgress(totalRead.toFloat() / totalSize)
+                    }
                 }
             }
         }
@@ -990,14 +1809,18 @@ class UpdateManager(
             ?: throw UpdateException("yt-dlp asset '$assetName' not found for ${platformPaths.operatingSystem}")
     }
 
+    /**
+     * Gets FFmpeg download URL for Windows only.
+     * macOS and Linux use package managers and don't call this function.
+     */
     private fun getFfmpegDownloadUrl(): String {
         return when (platformPaths.operatingSystem) {
             OperatingSystem.WINDOWS ->
                 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-            OperatingSystem.MACOS ->
-                "https://evermeet.cx/ffmpeg/getrelease/zip"
             OperatingSystem.LINUX ->
-                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+                throw IllegalStateException("Linux should use package managers to install FFmpeg")
+            OperatingSystem.MACOS ->
+                throw IllegalStateException("macOS should use Homebrew to install FFmpeg")
         }
     }
 
@@ -1105,6 +1928,27 @@ class UpdateManager(
         }
         return false
     }
+
+    /**
+     * Removes the macOS quarantine attribute from a file.
+     * Downloaded files on macOS have this attribute which prevents execution.
+     */
+    private fun removeQuarantineAttribute(file: File) {
+        try {
+            val process = ProcessBuilder("xattr", "-d", "com.apple.quarantine", file.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            val exitCode = process.waitFor()
+            if (exitCode == 0) {
+                logger.debug { "Removed quarantine attribute from ${file.name}" }
+            } else {
+                // Exit code 1 means attribute doesn't exist, which is fine
+                logger.trace { "Quarantine attribute not present on ${file.name}" }
+            }
+        } catch (e: Exception) {
+            logger.warn { "Could not remove quarantine attribute from ${file.name}: ${e.message}" }
+        }
+    }
 }
 
 // ========== Data Classes ==========
@@ -1164,15 +2008,17 @@ data class AppUpdateInfo(
  * @property ytDlpAvailable New yt-dlp version available, or null if up-to-date.
  * @property ffmpegAvailable New FFmpeg version available, or null if up-to-date.
  * @property whisperCppAvailable New whisper.cpp version available, or null if up-to-date.
+ * @property libreTranslateAvailable New LibreTranslate version available, or null if up-to-date.
  */
 data class DependencyUpdates(
     val ytDlpAvailable: String?,
     val ffmpegAvailable: String?,
-    val whisperCppAvailable: String?
+    val whisperCppAvailable: String?,
+    val libreTranslateAvailable: String? = null
 ) {
     /** Whether any dependency updates are available. */
     val hasUpdates: Boolean get() =
-        ytDlpAvailable != null || ffmpegAvailable != null || whisperCppAvailable != null
+        ytDlpAvailable != null || ffmpegAvailable != null || whisperCppAvailable != null || libreTranslateAvailable != null
 }
 
 /**

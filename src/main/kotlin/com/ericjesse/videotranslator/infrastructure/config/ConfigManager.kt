@@ -189,6 +189,33 @@ class ConfigManager(
         file.parentFile?.mkdirs()
         file.writeText(json.encodeToString(versions))
     }
+
+    /**
+     * Gets the actual path to a binary, checking stored paths first.
+     * This is important for Homebrew/package manager installations where
+     * the actual binary path differs from the app's bin directory.
+     *
+     * @param name The binary name (e.g., "ffmpeg", "ffprobe", "yt-dlp", "whisper")
+     * @return The actual path to the binary
+     */
+    fun getBinaryPath(name: String): String {
+        val versions = getInstalledVersions()
+        val storedPath = when (name) {
+            "ffmpeg" -> versions.ffmpegPath
+            "ffprobe" -> versions.ffprobePath
+            "yt-dlp" -> versions.ytDlpPath
+            "whisper" -> versions.whisperPath
+            else -> null
+        }
+
+        // If we have a stored path and the file exists, use it
+        if (storedPath != null && File(storedPath).exists()) {
+            return storedPath
+        }
+
+        // Fall back to the default bin directory path
+        return platformPaths.getBinaryPath(name)
+    }
     
     /**
      * Clears all cached configuration.
@@ -322,7 +349,7 @@ data class SetupProgress(
 @Serializable
 data class TranscriptionSettings(
     val whisperModel: String = "base",
-    val preferYouTubeCaptions: Boolean = true
+    val preferYouTubeCaptions: Boolean = false
 )
 
 /**
@@ -349,7 +376,7 @@ data class TranslationSettings(
  */
 @Serializable
 data class SubtitleSettings(
-    val defaultOutputMode: String = "soft",
+    val defaultOutputMode: String = "burned_in",
     val alwaysExportSrt: Boolean = false,
     val burnedIn: BurnedInSettings = BurnedInSettings()
 )
@@ -415,31 +442,41 @@ data class UiSettings(
 /**
  * Translation service configuration (contains sensitive data like API keys).
  *
- * @property libreTranslateUrl URL of the LibreTranslate server to use.
+ * LibreTranslate uses a local self-hosted server and doesn't require configuration.
+ *
  * @property deeplApiKey API key for DeepL translation service.
  * @property openaiApiKey API key for OpenAI translation service.
  * @property googleApiKey API key for Google Cloud Translation service.
  */
 @Serializable
 data class TranslationServiceConfig(
-    val libreTranslateUrl: String? = "https://libretranslate.com",
     val deeplApiKey: String? = null,
     val openaiApiKey: String? = null,
     val googleApiKey: String? = null
 )
 
 /**
- * Tracks installed versions of dependencies.
+ * Tracks installed versions and paths of dependencies.
  *
  * @property ytDlp Installed version of yt-dlp, or null if not installed.
  * @property ffmpeg Installed version of FFmpeg, or null if not installed.
  * @property whisperCpp Installed version of whisper.cpp, or null if not installed.
  * @property whisperModel Name of the installed Whisper model (tiny, base, small, medium, large), or null.
+ * @property libreTranslate Installed version of LibreTranslate, or null if not installed.
+ * @property ytDlpPath Actual path to yt-dlp binary (used when installed via Homebrew/package manager).
+ * @property ffmpegPath Actual path to ffmpeg binary (used when installed via Homebrew/package manager).
+ * @property ffprobePath Actual path to ffprobe binary (used when installed via Homebrew/package manager).
+ * @property whisperPath Actual path to whisper binary (used when installed via Homebrew/package manager).
  */
 @Serializable
 data class InstalledVersions(
     val ytDlp: String? = null,
     val ffmpeg: String? = null,
     val whisperCpp: String? = null,
-    val whisperModel: String? = null
+    val whisperModel: String? = null,
+    val libreTranslate: String? = null,
+    val ytDlpPath: String? = null,
+    val ffmpegPath: String? = null,
+    val ffprobePath: String? = null,
+    val whisperPath: String? = null
 )

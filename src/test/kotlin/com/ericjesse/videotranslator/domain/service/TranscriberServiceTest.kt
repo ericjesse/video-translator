@@ -1,10 +1,31 @@
 package com.ericjesse.videotranslator.domain.service
 
-import com.ericjesse.videotranslator.domain.model.*
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.WhisperErrorType
+import com.ericjesse.videotranslator.domain.model.WhisperException
+import com.ericjesse.videotranslator.domain.model.WhisperModel
+import com.ericjesse.videotranslator.domain.model.WhisperOptions
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
-import com.ericjesse.videotranslator.infrastructure.config.*
-import com.ericjesse.videotranslator.infrastructure.process.*
-import io.mockk.*
+import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
+import com.ericjesse.videotranslator.infrastructure.config.TranscriptionSettings
+import com.ericjesse.videotranslator.infrastructure.process.ProcessException
+import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import com.ericjesse.videotranslator.infrastructure.process.ProcessResult
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import java.io.File
+import java.nio.file.Path
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
@@ -12,9 +33,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import java.io.File
-import java.nio.file.Path
-import kotlin.test.*
 
 // Helper to check if command list contains a binary
 private fun List<String>.containsBinary(name: String) = firstOrNull()?.contains(name) == true
@@ -44,6 +62,11 @@ class TranscriberServiceTest {
         every { platformPaths.modelsDir } returns tempDir.resolve("models").toString().also {
             File(it, "whisper").mkdirs()
         }
+
+        // ConfigManager mocks
+        every { configManager.getBinaryPath("whisper") } returns "/usr/local/bin/whisper"
+        every { configManager.getBinaryPath("ffmpeg") } returns "/usr/local/bin/ffmpeg"
+        every { configManager.getBinaryPath("ffprobe") } returns "/usr/local/bin/ffprobe"
 
         val settings = AppSettings(
             transcription = TranscriptionSettings(whisperModel = "base")
@@ -596,8 +619,8 @@ class TranscriberServiceTest {
 
             transcriberService.transcribe(inputFile.absolutePath, WhisperOptions()).toList()
 
-            // Should only have 1 FFmpeg call (initial extraction)
-            assertEquals(1, ffmpegCalls.size, "Should only extract audio once for short files")
+            // Should have 2 FFmpeg calls (MP3 extraction + WAV conversion)
+            assertEquals(2, ffmpegCalls.size, "Should have MP3 extraction + WAV conversion for short files")
         }
     }
 
@@ -662,7 +685,9 @@ class TranscriberServiceTest {
         }
 
         @Test
-        fun `cleans up temp files on error`() = runTest {
+        fun `temp files are kept for deferred cleanup on error`() = runTest {
+            // Note: Temp files are now kept until app shutdown via TempFileManager
+            // This test verifies that the error is properly thrown even with temp files present
             val inputFile = File(tempDir.toFile(), "test.mp4")
             inputFile.writeText("video content")
 
@@ -689,16 +714,15 @@ class TranscriberServiceTest {
                 processExecutor.execute(match { it.containsBinary("whisper") }, any(), any(), any())
             } throws ProcessException("whisper", 1, "Failed")
 
-            try {
+            val exception = assertFailsWith<WhisperException> {
                 transcriberService.transcribe(inputFile.absolutePath, WhisperOptions()).toList()
-            } catch (e: WhisperException) {
-                // Expected
             }
 
-            // Verify temp files are cleaned up
-            createdFiles.forEach { file ->
-                assertFalse(file.exists(), "Temp file should be deleted: ${file.absolutePath}")
-            }
+            // Verify error is properly thrown
+            assertNotNull(exception)
+
+            // Temp files are now kept for deferred cleanup via TempFileManager
+            // They will be cleaned up at app shutdown, not immediately
         }
     }
 
@@ -754,7 +778,9 @@ class TranscriberServiceTest {
 
             val whisperCommand = capturedCommands.find { it.containsBinary("whisper") }
             assertNotNull(whisperCommand)
-            assertTrue(whisperCommand.contains("--gpu"))
+            // GPU is enabled by default in whisper-cpp, so no flag is added when useGpu=true
+            // We only add --no-gpu when useGpu=false
+            assertFalse(whisperCommand.contains("--no-gpu"), "Should NOT contain --no-gpu when GPU is enabled")
         }
 
         @Test

@@ -18,6 +18,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -136,7 +138,7 @@ fun TranslationTabContent(
             }
         )
 
-        // LibreTranslate Settings (always visible when selected)
+        // LibreTranslate Settings (local server - just show test connection)
         AnimatedVisibility(
             visible = activeService == TranslationServiceOption.LIBRE_TRANSLATE,
             enter = fadeIn() + expandVertically(),
@@ -144,18 +146,13 @@ fun TranslationTabContent(
         ) {
             LibreTranslateSettingsCard(
                 i18n = i18n,
-                instanceUrl = serviceConfig.libreTranslateUrl ?: "",
                 testResult = libreTranslateTestResult,
-                onInstanceUrlChange = { url ->
-                    onUpdateServiceConfig { it.copy(libreTranslateUrl = url.ifEmpty { null }) }
-                    libreTranslateTestResult = ConnectionTestResult.Idle
-                },
                 onTestConnection = {
                     scope.launch {
                         libreTranslateTestResult = ConnectionTestResult.Testing
                         libreTranslateTestResult = testLibreTranslateConnection(
                             appModule.httpClient,
-                            serviceConfig.libreTranslateUrl ?: ""
+                            appModule.libreTranslateService.serverUrl
                         )
                     }
                 }
@@ -249,7 +246,8 @@ private fun ServiceDropdown(
             },
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .pointerHoverIcon(PointerIcon.Hand),
             shape = RoundedCornerShape(8.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -329,9 +327,7 @@ private fun ServiceDropdown(
 @Composable
 private fun LibreTranslateSettingsCard(
     i18n: I18nManager,
-    instanceUrl: String,
     testResult: ConnectionTestResult,
-    onInstanceUrlChange: (String) -> Unit,
     onTestConnection: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -350,7 +346,7 @@ private fun LibreTranslateSettingsCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.Public,
+                    imageVector = Icons.Default.Computer,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
@@ -362,28 +358,11 @@ private fun LibreTranslateSettingsCard(
                 )
             }
 
-            // Instance URL field
-            OutlinedTextField(
-                value = instanceUrl,
-                onValueChange = onInstanceUrlChange,
-                label = { Text(i18n["settings.translation.instanceUrl"]) },
-                placeholder = { Text("https://libretranslate.com") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Link,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                )
+            // Local server info
+            Text(
+                text = i18n["service.libretranslate.description"],
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             // Test connection button and result
@@ -397,7 +376,7 @@ private fun LibreTranslateSettingsCard(
                     onClick = onTestConnection,
                     style = ButtonStyle.Secondary,
                     size = ButtonSize.Small,
-                    enabled = instanceUrl.isNotBlank() && testResult !is ConnectionTestResult.Testing,
+                    enabled = testResult !is ConnectionTestResult.Testing,
                     loading = testResult is ConnectionTestResult.Testing
                 )
 
@@ -650,19 +629,14 @@ private fun ConnectionTestResultIndicator(
 // ========== Connection Testing Functions ==========
 
 /**
- * Tests connection to a LibreTranslate instance.
+ * Tests connection to the local LibreTranslate server.
  */
 private suspend fun testLibreTranslateConnection(
     httpClient: HttpClient,
-    instanceUrl: String
+    serverUrl: String
 ): ConnectionTestResult {
-    if (instanceUrl.isBlank()) {
-        return ConnectionTestResult.Error("URL is empty")
-    }
-
     return try {
-        val url = instanceUrl.trimEnd('/')
-        val response = httpClient.get("$url/languages")
+        val response = httpClient.get("$serverUrl/languages")
 
         when (response.status) {
             HttpStatusCode.OK -> {
@@ -673,7 +647,7 @@ private suspend fun testLibreTranslateConnection(
             }
         }
     } catch (e: Exception) {
-        ConnectionTestResult.Error(e.message?.take(30) ?: "Connection failed")
+        ConnectionTestResult.Error(e.message?.take(30) ?: "Server not running")
     }
 }
 

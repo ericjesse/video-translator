@@ -3,6 +3,8 @@ package com.ericjesse.videotranslator.domain.model
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import kotlin.test.*
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 
 class SubtitleRenderModelsTest {
 
@@ -917,14 +919,19 @@ class SubtitleRenderModelsTest {
 
         @Test
         fun `parseLine calculates ETA when speed is available`() {
-            val progress = RenderProgress(0f, 0, 60000, speed = 2.0f, stage = RenderStage.ENCODING)
+            // First parse out_time_ms to set currentTime (30000 milliseconds = 30 seconds)
+            val initialProgress = RenderProgress(0f, 0, 60000, stage = RenderStage.ENCODING)
+            val progressWithTime = FfmpegProgressParser.parseLine("out_time_ms=30000000", 60000, initialProgress)
+            assertNotNull(progressWithTime)
+            assertEquals(30000, progressWithTime.currentTime) // 30000 milliseconds
 
-            val result = FfmpegProgressParser.parseLine("out_time_ms=30000000", 60000, progress)
+            // Then parse speed - ETA is calculated when speed is parsed
+            val result = FfmpegProgressParser.parseLine("speed=2.0x", 60000, progressWithTime)
 
             assertNotNull(result)
             assertNotNull(result.eta)
-            // ETA calculation: remainingMs / 1000 / speed = 30000000 / 1000 / 2.0 = 15000
-            assertTrue(result.eta!! > 0, "ETA should be positive")
+            // ETA = remaining time / speed = (60000 - 30000) ms / 1000 / 2.0 = 15 seconds
+            assertEquals(15, result.eta)
         }
 
         @Test
@@ -1110,6 +1117,7 @@ class SubtitleRenderModelsTest {
         }
 
         @Test
+        @DisabledOnOs(OS.WINDOWS)
         fun `getFontDirectories contains user font directory`() {
             val directories = SystemFonts.getFontDirectories()
             val userHome = System.getProperty("user.home")

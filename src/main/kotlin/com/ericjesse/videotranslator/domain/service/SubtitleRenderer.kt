@@ -34,10 +34,10 @@ class SubtitleRenderer(
     private var lastResult: TranslationResult? = null
 
     private val ffmpegPath: String
-        get() = platformPaths.getBinaryPath("ffmpeg")
+        get() = configManager.getBinaryPath("ffmpeg")
 
     private val ffprobePath: String
-        get() = platformPaths.getBinaryPath("ffprobe")
+        get() = configManager.getBinaryPath("ffprobe")
 
     /**
      * Renders subtitles into the video with full styling and encoding options.
@@ -127,14 +127,23 @@ class SubtitleRenderer(
 
         // Handle subtitle export option
         val exportedSubtitlePath = if (outputOptions.exportSrt) {
-            // If we generated ASS but user wants SRT export, generate SRT too
-            if (useAss) {
-                val srtFile = File(outputOptions.outputDirectory, "${sanitizedTitle}_$langSuffix.srt")
-                writeSrtFile(subtitles, srtFile)
-                srtFile.absolutePath
+            // Use different filename to prevent video players from auto-loading
+            // (players auto-detect .srt files with same base name as video)
+            val srtFilename = if (outputOptions.subtitleType == SubtitleType.BURNED_IN) {
+                "${sanitizedTitle}_${langSuffix}_subtitles.srt"  // Different name to avoid auto-load
             } else {
-                subtitleFile.absolutePath
+                "${sanitizedTitle}_$langSuffix.srt"
             }
+            val srtFile = File(outputOptions.outputDirectory, srtFilename)
+
+            // If we generated ASS, create SRT for export; otherwise reuse existing SRT
+            if (useAss) {
+                writeSrtFile(subtitles, srtFile)
+            } else if (subtitleFile.absolutePath != srtFile.absolutePath) {
+                // Copy SRT to new location if names differ
+                subtitleFile.copyTo(srtFile, overwrite = true)
+            }
+            srtFile.absolutePath
         } else {
             null
         }
@@ -261,7 +270,10 @@ class SubtitleRenderer(
             isAssFormat
         )
 
-        logger.debug { "Running FFmpeg (burned-in): ${command.joinToString(" ")}" }
+        logger.info { "FFmpeg burned-in command: ${command.joinToString(" ")}" }
+        println("=== FFmpeg Render Command ===")
+        println(command.joinToString(" "))
+        println("=== Subtitle file: $subtitlePath ===")
 
         executeWithProgress(command, totalDuration, onProgress)
     }
@@ -281,6 +293,18 @@ class SubtitleRenderer(
         command.add(ffmpegPath)
         command.add("-i")
         command.add(videoPath)
+
+        // Explicitly map only video and audio streams, exclude everything else
+        command.add("-map")
+        command.add("0:v:0")  // First video stream only
+        command.add("-map")
+        command.add("0:a:0?")  // First audio stream only (optional with ?)
+        command.add("-map")
+        command.add("-0:s?")  // Explicitly EXCLUDE all subtitle streams (? = ignore if none exist)
+        command.add("-map")
+        command.add("-0:d?")  // Explicitly EXCLUDE all data streams (subtitles might be stored here)
+        command.add("-map")
+        command.add("-0:t?")  // Explicitly EXCLUDE all attachment streams
 
         // Add hardware decoding for VAAPI if using VAAPI encoder
         if (options.encoding.encoder == HardwareEncoder.VAAPI) {
@@ -316,6 +340,9 @@ class SubtitleRenderer(
             command.add("${options.encoding.audioBitrate}k")
         }
 
+        // Disable any existing subtitle streams (we're burning in our own)
+        command.add("-sn")
+
         // Output options
         command.add("-y")
         command.add("-progress")
@@ -327,27 +354,35 @@ class SubtitleRenderer(
 
     /**
      * Builds the FFmpeg subtitle filter with optional styling.
+     *
+     * Note: When using ProcessBuilder (not shell), we must escape special chars
+     * for FFmpeg's filter parser but NOT use shell-style quotes.
      */
     private fun buildSubtitleFilter(
         subtitlePath: String,
         style: SubtitleStyle,
         isAssFormat: Boolean
     ): String {
-        // Escape path for FFmpeg filter
+        // Escape path for FFmpeg filter syntax (not shell syntax!)
+        // FFmpeg filter special chars that need escaping: \ ' : [ ] # ;
+        // Order matters: escape backslashes first, then other special chars
         val escapedPath = subtitlePath
-            .replace("\\", "\\\\\\\\")
-            .replace(":", "\\\\:")
-            .replace("'", "\\\\'")
-            .replace("[", "\\\\[")
-            .replace("]", "\\\\]")
+            .replace("\\", "\\\\")      // \ -> \\
+            .replace("'", "\\'")        // ' -> \'
+            .replace(":", "\\:")        // : -> \:
+            .replace("[", "\\[")        // [ -> \[
+            .replace("]", "\\]")        // ] -> \]
+            .replace("#", "\\#")        // # -> \# (hashtags in filenames)
+            .replace(";", "\\;")        // ; -> \; (filter separator)
 
         return if (isAssFormat) {
             // ASS format - styling is in the file, just reference it
-            "ass='$escapedPath'"
+            // Use quotes to handle paths with spaces (FFmpeg filter syntax, not shell)
+            "ass=$escapedPath"
         } else {
             // SRT format - apply styling via force_style
             val forceStyle = buildForceStyle(style)
-            "subtitles='$escapedPath':force_style='$forceStyle'"
+            "subtitles=$escapedPath:force_style='$forceStyle'"
         }
     }
 
@@ -425,7 +460,11 @@ class SubtitleRenderer(
         val height = videoInfo.height ?: 1080
         val content = AssGenerator.generate(subtitles, style, width, height)
         file.writeText(content)
-        logger.debug { "Generated ASS file: ${file.absolutePath}" }
+        logger.info { "Generated ASS file: ${file.absolutePath}" }
+        logger.info { "ASS file content (first 2000 chars):\n${content.take(2000)}" }
+        println("=== Generated ASS file: ${file.absolutePath} ===")
+        println("Subtitle entries: ${subtitles.entries.size}")
+        println("Video resolution: ${width}x${height}")
     }
 
     /**

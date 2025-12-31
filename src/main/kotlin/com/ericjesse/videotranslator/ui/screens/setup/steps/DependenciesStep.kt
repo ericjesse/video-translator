@@ -4,13 +4,9 @@ package com.ericjesse.videotranslator.ui.screens.setup.steps
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -19,6 +15,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -107,8 +105,15 @@ fun DependenciesStep(
         displaySize = "85.2 MB"
     )
 
+    val libreTranslate = ComponentInfo(
+        nameKey = "component.libretranslate.name",
+        descriptionKey = "component.libretranslate.description",
+        sizeBytes = 150_000_000L,
+        displaySize = "150 MB"
+    )
+
     // Calculate total size
-    val totalSizeBytes = ytDlp.sizeBytes + ffmpeg.sizeBytes + currentModel.sizeBytes
+    val totalSizeBytes = ytDlp.sizeBytes + ffmpeg.sizeBytes + libreTranslate.sizeBytes + currentModel.sizeBytes
     val totalSizeDisplay = formatSize(totalSizeBytes)
 
     // Animation states
@@ -125,15 +130,20 @@ fun DependenciesStep(
         label = "contentAlpha"
     )
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .alpha(contentAlpha)
-            .verticalScroll(scrollState)
-            .padding(24.dp)
     ) {
-        // Description
-        Text(
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(24.dp)
+                .padding(end = 12.dp) // Extra padding for scrollbar
+        ) {
+            // Description
+            Text(
             text = i18n["setup.dependencies.description"],
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -169,6 +179,20 @@ fun DependenciesStep(
                     name = i18n[ffmpeg.nameKey],
                     description = i18n[ffmpeg.descriptionKey],
                     size = ffmpeg.displaySize,
+                    isRequired = true,
+                    isEnabled = !isDownloading
+                )
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+
+                // LibreTranslate
+                ComponentItem(
+                    name = i18n[libreTranslate.nameKey],
+                    description = i18n[libreTranslate.descriptionKey],
+                    size = libreTranslate.displaySize,
                     isRequired = true,
                     isEnabled = !isDownloading
                 )
@@ -219,7 +243,17 @@ fun DependenciesStep(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Scrollbar
+        VerticalScrollbar(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+            adapter = rememberScrollbarAdapter(scrollState)
+        )
     }
 }
 
@@ -393,8 +427,9 @@ private fun WhisperComponentItem(
                                 ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
                             },
                             modifier = Modifier
-                                .menuAnchor()
-                                .width(200.dp),
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                .width(200.dp)
+                                .pointerHoverIcon(if (isEnabled) PointerIcon.Hand else PointerIcon.Default),
                             textStyle = MaterialTheme.typography.bodySmall,
                             shape = RoundedCornerShape(8.dp),
                             colors = OutlinedTextFieldDefaults.colors()

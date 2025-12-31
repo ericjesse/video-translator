@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ericjesse.videotranslator.di.AppModule
@@ -451,12 +453,16 @@ private fun SettingsTabContent(
     modifier: Modifier = Modifier
 ) {
     val i18n = appModule.i18nManager
+    val scrollState = rememberScrollState()
 
-    Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp)
-    ) {
+    Box(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(24.dp)
+                .padding(end = 12.dp) // Extra padding for scrollbar
+        ) {
         // Tab title
         Text(
             text = i18n[state.selectedTab.titleKey],
@@ -517,6 +523,16 @@ private fun SettingsTabContent(
                 )
             }
         }
+        }
+
+        // Scrollbar
+        VerticalScrollbar(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
+            adapter = rememberScrollbarAdapter(scrollState)
+        )
     }
 }
 
@@ -754,7 +770,8 @@ private fun SettingsDropdown(
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .pointerHoverIcon(PointerIcon.Hand),
             shape = RoundedCornerShape(8.dp)
         )
 
