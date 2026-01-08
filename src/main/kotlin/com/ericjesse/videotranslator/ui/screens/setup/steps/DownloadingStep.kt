@@ -2,35 +2,70 @@
 
 package com.ericjesse.videotranslator.ui.screens.setup.steps
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.infrastructure.update.DownloadProgress
-import com.ericjesse.videotranslator.ui.components.*
+import com.ericjesse.videotranslator.ui.components.AppButton
+import com.ericjesse.videotranslator.ui.components.AppCard
+import com.ericjesse.videotranslator.ui.components.AppLinearProgressBar
+import com.ericjesse.videotranslator.ui.components.ButtonSize
+import com.ericjesse.videotranslator.ui.components.ButtonStyle
+import com.ericjesse.videotranslator.ui.components.ProgressColor
+import com.ericjesse.videotranslator.ui.components.ProgressSize
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.onCompletion
-import kotlinx.coroutines.launch
 
 /**
  * Component download status.
@@ -120,6 +155,15 @@ fun DownloadingStep(
                 name = "whispermodel",
                 displayName = "Whisper $selectedWhisperModel model",
                 totalSize = WhisperModel.fromId(selectedWhisperModel).sizeBytes
+            )
+        )
+    }
+    var pythonState by remember {
+        mutableStateOf(
+            ComponentDownloadState(
+                name = "python",
+                displayName = "Python",
+                totalSize = 50_000_000L // ~50MB for Python installation
             )
         )
     }
@@ -296,7 +340,45 @@ fun DownloadingStep(
             return@LaunchedEffect
         }
 
-        // Install LibreTranslate (80% - 100%)
+        // Install Python (80% - 90%)
+        currentStatusMessage = i18n["setup.downloading.installing", "Python"]
+        pythonState = pythonState.copy(status = DownloadStatus.DOWNLOADING)
+
+        try {
+            updateManager.installPython()
+                .catch { e ->
+                    pythonState = pythonState.copy(
+                        status = DownloadStatus.ERROR,
+                        errorMessage = e.message ?: "Installation failed"
+                    )
+                    hasError = true
+                }
+                .collect { progress ->
+                    pythonState = pythonState.copy(
+                        progress = progress.percentage,
+                        downloadedSize = (pythonState.totalSize * progress.percentage).toLong(),
+                        message = progress.message
+                    )
+                    overallProgress = 0.80f + progress.percentage * 0.10f
+                }
+
+            if (pythonState.status != DownloadStatus.ERROR) {
+                pythonState = pythonState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
+            }
+        } catch (e: Exception) {
+            pythonState = pythonState.copy(
+                status = DownloadStatus.ERROR,
+                errorMessage = e.message ?: "Installation failed"
+            )
+            hasError = true
+        }
+
+        if (hasError) {
+            isDownloading = false
+            return@LaunchedEffect
+        }
+
+        // Install LibreTranslate (90% - 100%)
         currentStatusMessage = i18n["setup.downloading.installing", "LibreTranslate"]
         libreTranslateState = libreTranslateState.copy(status = DownloadStatus.DOWNLOADING)
 
@@ -315,7 +397,7 @@ fun DownloadingStep(
                         downloadedSize = (libreTranslateState.totalSize * progress.percentage).toLong(),
                         message = progress.message
                     )
-                    overallProgress = 0.80f + progress.percentage * 0.20f
+                    overallProgress = 0.90f + progress.percentage * 0.10f
                 }
 
             if (libreTranslateState.status != DownloadStatus.ERROR) {
@@ -433,6 +515,17 @@ fun DownloadingStep(
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
 
+                // Python
+                DownloadComponentItem(
+                    state = pythonState,
+                    i18n = i18n
+                )
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
                 // LibreTranslate
                 DownloadComponentItem(
                     state = libreTranslateState,
@@ -532,6 +625,13 @@ fun DownloadingStep(
                         }
                         if (whisperModelState.status == DownloadStatus.ERROR) {
                             whisperModelState = whisperModelState.copy(
+                                status = DownloadStatus.PENDING,
+                                errorMessage = null,
+                                progress = 0f
+                            )
+                        }
+                        if (pythonState.status == DownloadStatus.ERROR) {
+                            pythonState = pythonState.copy(
                                 status = DownloadStatus.PENDING,
                                 errorMessage = null,
                                 progress = 0f

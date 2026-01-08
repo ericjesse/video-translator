@@ -6,29 +6,34 @@ import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.OperatingSystem
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.http.*
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.request.head
+import io.ktor.client.request.header
+import io.ktor.client.request.prepareGet
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentLength
+import io.ktor.http.isSuccess
 import io.ktor.utils.io.readAvailable
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 private val logger = KotlinLogging.logger {}
 
@@ -1335,21 +1340,278 @@ class UpdateManager(
         logger.info { "whisper.cpp ${release.tagName} installed successfully" }
     }
 
+    // ========== Python Installation ==========
+
+    /**
+     * Installs Python 3.11 using platform-specific package managers.
+     * - macOS: Uses Homebrew
+     * - Linux: Uses system package managers (apt, dnf, pacman, etc.)
+     * - Windows: Uses winget
+     */
+    fun installPython(): Flow<DownloadProgress> = channelFlow {
+        when (platformPaths.operatingSystem) {
+            OperatingSystem.MACOS -> {
+                installPythonViaBrew { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+
+            OperatingSystem.LINUX -> {
+                installPythonOnLinux { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+
+            OperatingSystem.WINDOWS -> {
+                installPythonOnWindows { progress, message ->
+                    send(DownloadProgress(progress, message))
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Installs Python via Homebrew (macOS).
+     */
+    private suspend fun installPythonViaBrew(
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        onProgress(0f, "Checking for Homebrew...")
+
+        val brewPath = findBrewPath()
+        if (brewPath == null) {
+            throw UpdateException(
+                "Homebrew is required to install Python on macOS. " +
+                        "Please install Homebrew from https://brew.sh and try again."
+            )
+        }
+
+        logger.info { "Found Homebrew at: $brewPath" }
+        onProgress(0.1f, "Installing Python via Homebrew...")
+
+        val process = ProcessBuilder(brewPath, "install", "python@3.11")
+            .redirectErrorStream(true)
+            .start()
+
+        val reader = process.inputStream.bufferedReader()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            logger.debug { "[brew] $line" }
+            when {
+                line!!.contains("Downloading") -> onProgress(0.3f, "Downloading Python...")
+                line!!.contains("Pouring") -> onProgress(0.6f, "Installing Python...")
+                line!!.contains("Caveats") -> onProgress(0.8f, "Finalizing installation...")
+            }
+        }
+
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw UpdateException("Failed to install Python via Homebrew (exit code: $exitCode)")
+        }
+
+        // Verify installation
+        val pythonPath = findPythonPath()
+        if (pythonPath == null) {
+            throw UpdateException("Python was installed but could not be found in PATH. Try restarting your terminal.")
+        }
+
+        onProgress(1f, "Python installed via Homebrew")
+        logger.info { "Python installed successfully via Homebrew at: $pythonPath" }
+    }
+
+    /**
+     * Installs Python on Linux using package managers.
+     */
+    private suspend fun installPythonOnLinux(
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        onProgress(0f, "Detecting package manager...")
+
+        // Try Linuxbrew first if available
+        val brewPath = findBrewPath()
+        if (brewPath != null) {
+            logger.info { "Found Linuxbrew, using it to install Python" }
+            installPythonViaBrew(onProgress)
+            return
+        }
+
+        val packageManager = detectLinuxPackageManagerForPython()
+
+        if (packageManager != null) {
+            onProgress(0.1f, "Installing Python via ${packageManager.name}...")
+            logger.info { "Using ${packageManager.name} to install Python" }
+
+            val process = ProcessBuilder(*packageManager.installCommand.toTypedArray())
+                .redirectErrorStream(true)
+                .start()
+
+            val reader = process.inputStream.bufferedReader()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                logger.debug { "[${packageManager.name}] $line" }
+                when {
+                    line!!.contains("Downloading", ignoreCase = true) ||
+                            line!!.contains("Get:", ignoreCase = true) ->
+                        onProgress(0.3f, "Downloading Python...")
+
+                    line!!.contains("Unpacking", ignoreCase = true) ||
+                            line!!.contains("Installing", ignoreCase = true) ->
+                        onProgress(0.6f, "Installing Python...")
+
+                    line!!.contains("Setting up", ignoreCase = true) ||
+                            line!!.contains("running", ignoreCase = true) ->
+                        onProgress(0.8f, "Finalizing installation...")
+                }
+            }
+
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                throw UpdateException(
+                    "Failed to install Python via ${packageManager.name} (exit code: $exitCode). " +
+                            "You may need to run with sudo privileges or install Python manually."
+                )
+            }
+
+            // Verify installation
+            val pythonPath = findPythonPath()
+            if (pythonPath == null) {
+                throw UpdateException("Python was installed but could not be found. Try restarting your terminal.")
+            }
+
+            onProgress(1f, "Python installed via ${packageManager.name}")
+            logger.info { "Python installed successfully via ${packageManager.name} at: $pythonPath" }
+        } else {
+            throw UpdateException(
+                "No supported package manager found. " +
+                        "Please install Python 3.8+ manually from https://python.org and try again."
+            )
+        }
+    }
+
+    /**
+     * Installs Python on Windows using winget.
+     */
+    private suspend fun installPythonOnWindows(
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        onProgress(0f, "Checking for winget...")
+
+        // Check if winget is available
+        val wingetAvailable = try {
+            val process = ProcessBuilder("winget", "--version")
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor()
+            process.exitValue() == 0
+        } catch (e: Exception) {
+            false
+        }
+
+        if (!wingetAvailable) {
+            throw UpdateException(
+                "winget is required to install Python on Windows. " +
+                        "Please install Python manually from https://python.org and try again."
+            )
+        }
+
+        onProgress(0.1f, "Installing Python via winget...")
+        logger.info { "Using winget to install Python" }
+
+        val process = ProcessBuilder(
+            "winget", "install", "-e", "--id", "Python.Python.3.11",
+            "--accept-source-agreements", "--accept-package-agreements"
+        )
+            .redirectErrorStream(true)
+            .start()
+
+        val reader = process.inputStream.bufferedReader()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            logger.debug { "[winget] $line" }
+            when {
+                line!!.contains("Downloading", ignoreCase = true) ->
+                    onProgress(0.3f, "Downloading Python...")
+
+                line!!.contains("Installing", ignoreCase = true) ->
+                    onProgress(0.6f, "Installing Python...")
+
+                line!!.contains("Successfully", ignoreCase = true) ->
+                    onProgress(0.9f, "Finalizing installation...")
+            }
+        }
+
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw UpdateException(
+                "Failed to install Python via winget (exit code: $exitCode). " +
+                        "Please install Python manually from https://python.org and try again."
+            )
+        }
+
+        // Verify installation
+        val pythonPath = findPythonPath()
+        if (pythonPath == null) {
+            throw UpdateException(
+                "Python was installed but could not be found. " +
+                        "Please restart your terminal or computer and try again."
+            )
+        }
+
+        onProgress(1f, "Python installed via winget")
+        logger.info { "Python installed successfully via winget at: $pythonPath" }
+    }
+
+    /**
+     * Detects available Linux package manager for Python installation.
+     */
+    private fun detectLinuxPackageManagerForPython(): LinuxPackageManager? {
+        val packageManagers = listOf(
+            LinuxPackageManager("apt", listOf("apt", "install", "-y", "python3", "python3-pip", "python3-venv")),
+            LinuxPackageManager("dnf", listOf("dnf", "install", "-y", "python3", "python3-pip")),
+            LinuxPackageManager("yum", listOf("yum", "install", "-y", "python3", "python3-pip")),
+            LinuxPackageManager("pacman", listOf("pacman", "-S", "--noconfirm", "python", "python-pip")),
+            LinuxPackageManager("zypper", listOf("zypper", "install", "-y", "python3", "python3-pip")),
+            LinuxPackageManager("apk", listOf("apk", "add", "python3", "py3-pip"))
+        )
+
+        for (pm in packageManagers) {
+            if (isCommandAvailable(pm.name)) {
+                logger.debug { "Found package manager: ${pm.name}" }
+                return pm
+            }
+        }
+
+        return null
+    }
+
     // ========== LibreTranslate Installation ==========
 
     /**
      * Installs LibreTranslate in a Python virtual environment.
-     * Requires Python 3.8+ to be installed on the system.
+     * Automatically installs Python if not found on the system.
      */
     fun installLibreTranslate(): Flow<DownloadProgress> = channelFlow {
         send(DownloadProgress(0f, "Checking Python installation..."))
 
-        val pythonPath = findPythonPath()
+        var pythonPath = findPythonPath()
         if (pythonPath == null) {
-            throw UpdateException(
-                "Python 3.8+ is required to install LibreTranslate. " +
-                "Please install Python from https://python.org and try again."
-            )
+            send(DownloadProgress(0.02f, "Python not found, installing..."))
+            logger.info { "Python not found, attempting to install..." }
+
+            // Collect Python installation progress and forward it (scaled to 0.02-0.15 range)
+            installPython().collect { progress ->
+                val scaledProgress = 0.02f + (progress.percentage * 0.13f)
+                send(DownloadProgress(scaledProgress, progress.message))
+            }
+
+            // Re-check for Python after installation
+            pythonPath = findPythonPath()
+            if (pythonPath == null) {
+                throw UpdateException(
+                    "Python installation completed but Python could not be found. " +
+                            "Please restart your terminal and try again."
+                )
+            }
         }
 
         logger.info { "Found Python at: $pythonPath" }
