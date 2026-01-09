@@ -301,6 +301,17 @@ class WhisperException(
         fun fromOutput(output: String, exitCode: Int): WhisperException {
             val lowerOutput = output.lowercase()
 
+            // Check for Windows DLL not found error (0xC0000135 = -1073741515)
+            // This typically means Visual C++ Redistributable is not installed
+            if (exitCode == -1073741515) {
+                return WhisperException(
+                    WhisperErrorType.WHISPER_NOT_FOUND,
+                    "Whisper cannot start - missing Visual C++ Redistributable. " +
+                            "Please install it from Microsoft: https://aka.ms/vs/17/release/vc_redist.x64.exe",
+                    "Exit code: $exitCode (STATUS_DLL_NOT_FOUND) - Visual C++ Runtime required"
+                )
+            }
+
             return when {
                 "no such file" in lowerOutput && "whisper" in lowerOutput ->
                     WhisperException(

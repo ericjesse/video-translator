@@ -3,16 +3,26 @@ package com.ericjesse.videotranslator.infrastructure.translation
 import com.ericjesse.videotranslator.infrastructure.config.OperatingSystem
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.http.*
-import kotlinx.coroutines.*
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpStatusCode
+import java.io.File
+import java.net.ServerSocket
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.io.File
-import java.net.ServerSocket
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val logger = KotlinLogging.logger {}
 
@@ -95,7 +105,11 @@ class LibreTranslateService(
                 // Create a wrapper script that patches SSL before running LibreTranslate
                 val wrapperScript = createSslPatchedStartupScript(venvDir, port, loadOnly)
 
-                val command = listOf(pythonPath, "-c", wrapperScript)
+                // Write script to a temp file instead of using -c (which has issues on Windows with quotes)
+                val scriptFile = File(platformPaths.libreTranslateDir, "start_server.py")
+                scriptFile.writeText(wrapperScript)
+
+                val command = listOf(pythonPath, scriptFile.absolutePath)
 
                 logger.info { "Starting LibreTranslate with SSL fix on port $port" }
 

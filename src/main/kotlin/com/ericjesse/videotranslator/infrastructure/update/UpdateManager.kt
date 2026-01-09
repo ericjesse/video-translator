@@ -1250,7 +1250,12 @@ class UpdateManager(
     private suspend fun installWhisperCppFromGitHub(
         onProgress: suspend (Float, String) -> Unit
     ) {
-        onProgress(0f, "Fetching whisper.cpp release...")
+        // On Windows, ensure Visual C++ Redistributable is installed (required for whisper.cpp)
+        if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
+            ensureVcRedistInstalled(onProgress)
+        }
+
+        onProgress(0.1f, "Fetching whisper.cpp release...")
 
         val release = getLatestRelease(WHISPER_REPO)
         val downloadUrl = getWhisperCppDownloadUrl(release)
@@ -1258,7 +1263,7 @@ class UpdateManager(
         val archiveFile = File(platformPaths.cacheDir, "whisper.zip")
         val extractDir = File(platformPaths.cacheDir, "whisper-extract")
 
-        onProgress(0.05f, "Downloading whisper.cpp ${release.tagName}...")
+        onProgress(0.15f, "Downloading whisper.cpp ${release.tagName}...")
 
         downloadFileWithRetry(
             url = downloadUrl,
@@ -1266,7 +1271,7 @@ class UpdateManager(
             targetFile = archiveFile,
             expectedChecksum = null
         ) { progress, message ->
-            onProgress(0.05f + progress * 0.65f, message)
+            onProgress(0.15f + progress * 0.55f, message)
         }
 
         onProgress(0.7f, "Extracting whisper.cpp...")
@@ -1579,6 +1584,176 @@ class UpdateManager(
 
         onProgress(1f, if (alreadyInstalled) "Python is already installed" else "Python installed via winget")
         logger.info { "Python available at: $pythonPath" }
+    }
+
+    // ========== Visual C++ Redistributable Installation (Windows) ==========
+
+    /**
+     * Ensures Visual C++ Redistributable is installed on Windows.
+     * Required for whisper.cpp to run.
+     * This is a public function that can be called before transcription to ensure prerequisites are met.
+     *
+     * @return true if VC++ is installed (or was successfully installed), false if installation failed
+     */
+    suspend fun ensureWindowsPrerequisites(): Boolean {
+        if (platformPaths.operatingSystem != OperatingSystem.WINDOWS) {
+            return true // Not needed on other platforms
+        }
+
+        if (isVcRedistInstalled()) {
+            return true
+        }
+
+        logger.info { "Visual C++ Redistributable not found, attempting installation..." }
+
+        return try {
+            ensureVcRedistInstalled { _, _ -> } // No progress reporting needed
+            isVcRedistInstalled() // Verify it was installed
+        } catch (e: Exception) {
+            logger.error(e) { "Failed to install Visual C++ Redistributable" }
+            false
+        }
+    }
+
+    /**
+     * Ensures Visual C++ Redistributable is installed on Windows.
+     * Required for whisper.cpp to run.
+     */
+    private suspend fun ensureVcRedistInstalled(
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        onProgress(0f, "Checking Visual C++ Redistributable...")
+
+        // Check if VC++ Redistributable is already installed
+        if (isVcRedistInstalled()) {
+            logger.info { "Visual C++ Redistributable is already installed" }
+            onProgress(0.1f, "Visual C++ Redistributable found")
+            return
+        }
+
+        logger.info { "Visual C++ Redistributable not found, installing..." }
+        onProgress(0.02f, "Installing Visual C++ Redistributable...")
+
+        // Check if winget is available
+        val wingetAvailable = try {
+            val process = ProcessBuilder("winget", "--version")
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor()
+            process.exitValue() == 0
+        } catch (e: Exception) {
+            false
+        }
+
+        if (!wingetAvailable) {
+            logger.warn { "winget not available, skipping VC++ Redistributable installation" }
+            logger.warn { "User may need to manually install from: https://aka.ms/vs/17/release/vc_redist.x64.exe" }
+            onProgress(0.1f, "winget not available - VC++ may need manual install")
+            return
+        }
+
+        onProgress(0.03f, "Installing Visual C++ Redistributable via winget...")
+
+        val process = ProcessBuilder(
+            "winget", "install", "-e", "--id", "Microsoft.VCRedist.2015+.x64",
+            "--accept-source-agreements", "--accept-package-agreements", "--silent"
+        )
+            .redirectErrorStream(true)
+            .start()
+
+        val reader = process.inputStream.bufferedReader()
+        val outputLines = mutableListOf<String>()
+        var line: String?
+        while (reader.readLine().also { line = it } != null) {
+            logger.debug { "[winget] $line" }
+            outputLines.add(line!!)
+            when {
+                line!!.contains("Downloading", ignoreCase = true) ->
+                    onProgress(0.05f, "Downloading Visual C++ Redistributable...")
+
+                line!!.contains("Installing", ignoreCase = true) ->
+                    onProgress(0.07f, "Installing Visual C++ Redistributable...")
+
+                line!!.contains("Successfully", ignoreCase = true) ->
+                    onProgress(0.09f, "Visual C++ Redistributable installed")
+            }
+        }
+
+        val exitCode = process.waitFor()
+        val fullOutput = outputLines.joinToString("\n")
+
+        // Check for "already installed" messages (winget returns non-zero in these cases)
+        val alreadyInstalled = fullOutput.contains("already installed", ignoreCase = true) ||
+                fullOutput.contains("No available upgrade", ignoreCase = true) ||
+                fullOutput.contains("No newer package versions", ignoreCase = true)
+
+        if (exitCode != 0 && !alreadyInstalled) {
+            logger.warn { "Failed to install Visual C++ Redistributable via winget (exit code: $exitCode)" }
+            logger.warn { "winget output: $fullOutput" }
+            logger.warn { "User may need to manually install from: https://aka.ms/vs/17/release/vc_redist.x64.exe" }
+            // Don't throw - continue and let whisper fail with a helpful message if needed
+        } else {
+            logger.info { "Visual C++ Redistributable winget command completed" }
+        }
+
+        // Verify installation was successful
+        if (isVcRedistInstalled()) {
+            logger.info { "Visual C++ Redistributable verified as installed" }
+            onProgress(0.1f, "Visual C++ Redistributable ready")
+        } else {
+            logger.warn { "Visual C++ Redistributable installation could not be verified" }
+            logger.warn { "User may need to manually install from: https://aka.ms/vs/17/release/vc_redist.x64.exe" }
+            onProgress(0.1f, "VC++ may need manual install")
+        }
+    }
+
+    /**
+     * Checks if Visual C++ Redistributable 2015-2022 (x64) is installed.
+     * Checks multiple registry locations as the path can vary.
+     */
+    private fun isVcRedistInstalled(): Boolean {
+        // Check multiple possible registry locations for VC++ Redistributable
+        val registryPaths = listOf(
+            "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+            "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+            "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64"
+        )
+
+        for (regPath in registryPaths) {
+            try {
+                val process = ProcessBuilder(
+                    "reg", "query", regPath, "/v", "Installed"
+                )
+                    .redirectErrorStream(true)
+                    .start()
+
+                val output = process.inputStream.bufferedReader().readText()
+                val exitCode = process.waitFor()
+
+                if (exitCode == 0 && output.contains("0x1")) {
+                    logger.debug { "VC++ Redistributable found at: $regPath" }
+                    return true
+                }
+            } catch (e: Exception) {
+                logger.debug { "Failed to check registry path $regPath: ${e.message}" }
+            }
+        }
+
+        // Also try to check if the actual DLL exists
+        val systemRoot = System.getenv("SystemRoot") ?: "C:\\Windows"
+        val vcRuntimeDlls = listOf(
+            "$systemRoot\\System32\\vcruntime140.dll",
+            "$systemRoot\\System32\\msvcp140.dll"
+        )
+
+        val dllsExist = vcRuntimeDlls.all { File(it).exists() }
+        if (dllsExist) {
+            logger.debug { "VC++ Runtime DLLs found in System32" }
+            return true
+        }
+
+        logger.debug { "VC++ Redistributable not found in registry or System32" }
+        return false
     }
 
     /**
