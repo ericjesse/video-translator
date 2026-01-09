@@ -1291,8 +1291,9 @@ class UpdateManager(
 
         onProgress(0.9f, "Installing whisper.cpp...")
 
-        // Find the whisper binary (might be named 'main', 'whisper', 'whisper-cpp', etc.)
-        val whisperBinaryNames = listOf("main", "whisper", "whisper-cpp", "whisper.cpp")
+        // Find the whisper binary (might be named 'whisper-cli', 'main', 'whisper', etc.)
+        // Note: whisper.cpp renamed main.exe to whisper-cli.exe in recent versions
+        val whisperBinaryNames = listOf("whisper-cli", "main", "whisper", "whisper-cpp", "whisper.cpp")
         var whisperPath: Path? = null
 
         for (name in whisperBinaryNames) {
