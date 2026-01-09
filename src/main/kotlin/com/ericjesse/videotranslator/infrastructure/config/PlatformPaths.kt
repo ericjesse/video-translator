@@ -141,7 +141,61 @@ class PlatformPaths {
      */
     val versionsFile: String
         get() = "$dataDir${File.separator}versions.json"
-    
+
+    /**
+     * Gets all data directories created by the application.
+     * Used for factory reset functionality.
+     */
+    fun getAllDataDirectories(): List<File> {
+        return listOf(
+            File(configDir),
+            File(dataDir)
+        ).filter { it.exists() }
+    }
+
+    /**
+     * Deletes all application data (config, binaries, models, cache).
+     * Used for factory reset functionality.
+     *
+     * @return true if all directories were deleted successfully
+     */
+    fun deleteAllData(): Boolean {
+        var success = true
+
+        // Delete data directory (contains bin, models, cache, libretranslate)
+        val dataDirectory = File(dataDir)
+        if (dataDirectory.exists()) {
+            success = dataDirectory.deleteRecursively() && success
+        }
+
+        // Delete config directory (contains settings.json, services.json)
+        val configDirectory = File(configDir)
+        if (configDirectory.exists()) {
+            success = configDirectory.deleteRecursively() && success
+        }
+
+        return success
+    }
+
+    /**
+     * Gets the total size of all application data in bytes.
+     */
+    fun getTotalDataSize(): Long {
+        var totalSize = 0L
+
+        val dataDirectory = File(dataDir)
+        if (dataDirectory.exists()) {
+            totalSize += dataDirectory.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }
+
+        val configDirectory = File(configDir)
+        if (configDirectory.exists()) {
+            totalSize += configDirectory.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }
+
+        return totalSize
+    }
+
     private fun detectOS(): OperatingSystem {
         val osName = System.getProperty("os.name").lowercase()
         return when {
