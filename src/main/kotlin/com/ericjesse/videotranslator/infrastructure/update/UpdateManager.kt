@@ -1859,13 +1859,23 @@ class UpdateManager(
 
         send(DownloadProgress(0.20f, "Installing LibreTranslate (this may take several minutes)..."))
 
-        // On Windows, install PyTorch CPU-only version first to avoid fbgemm.dll/MKL dependency issues
-        // The default PyTorch install includes CUDA support which requires Intel MKL libraries
+        // Install libretranslate and certifi (for SSL certificate verification)
+        val installResult = runCommand(
+            listOf(venvPip, "install", "libretranslate", "certifi"),
+            timeoutMinutes = 15  // Can take a while due to dependencies
+        )
+        if (!installResult.success) {
+            throw UpdateException("Failed to install LibreTranslate: ${installResult.error}")
+        }
+
+        // On Windows, force-reinstall PyTorch CPU-only version AFTER LibreTranslate to fix fbgemm.dll/MKL dependency issues
+        // LibreTranslate installs PyTorch with CUDA support which requires Intel MKL libraries that are often missing
+        // We need to force-reinstall to overwrite the CUDA version with the CPU-only version
         if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
-            send(DownloadProgress(0.25f, "Installing PyTorch (CPU version)..."))
+            send(DownloadProgress(0.70f, "Installing PyTorch (CPU version)..."))
             val torchResult = runCommand(
                 listOf(
-                    venvPip, "install", "torch",
+                    venvPip, "install", "--force-reinstall", "torch",
                     "--index-url", "https://download.pytorch.org/whl/cpu"
                 ),
                 timeoutMinutes = 10
@@ -1874,19 +1884,8 @@ class UpdateManager(
                 logger.warn { "PyTorch CPU installation warning: ${torchResult.error}" }
                 // Continue anyway, LibreTranslate might still work with default torch
             } else {
-                logger.info { "Installed PyTorch CPU-only version" }
+                logger.info { "Replaced PyTorch with CPU-only version" }
             }
-        }
-
-        send(DownloadProgress(0.40f, "Installing LibreTranslate..."))
-
-        // Install libretranslate and certifi (for SSL certificate verification)
-        val installResult = runCommand(
-            listOf(venvPip, "install", "libretranslate", "certifi"),
-            timeoutMinutes = 15  // Can take a while due to dependencies
-        )
-        if (!installResult.success) {
-            throw UpdateException("Failed to install LibreTranslate: ${installResult.error}")
         }
 
         send(DownloadProgress(0.85f, "Verifying installation..."))
