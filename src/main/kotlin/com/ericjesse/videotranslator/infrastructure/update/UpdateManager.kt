@@ -1859,6 +1859,27 @@ class UpdateManager(
 
         send(DownloadProgress(0.20f, "Installing LibreTranslate (this may take several minutes)..."))
 
+        // On Windows, install PyTorch CPU-only version first to avoid fbgemm.dll/MKL dependency issues
+        // The default PyTorch install includes CUDA support which requires Intel MKL libraries
+        if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
+            send(DownloadProgress(0.25f, "Installing PyTorch (CPU version)..."))
+            val torchResult = runCommand(
+                listOf(
+                    venvPip, "install", "torch",
+                    "--index-url", "https://download.pytorch.org/whl/cpu"
+                ),
+                timeoutMinutes = 10
+            )
+            if (!torchResult.success) {
+                logger.warn { "PyTorch CPU installation warning: ${torchResult.error}" }
+                // Continue anyway, LibreTranslate might still work with default torch
+            } else {
+                logger.info { "Installed PyTorch CPU-only version" }
+            }
+        }
+
+        send(DownloadProgress(0.40f, "Installing LibreTranslate..."))
+
         // Install libretranslate and certifi (for SSL certificate verification)
         val installResult = runCommand(
             listOf(venvPip, "install", "libretranslate", "certifi"),
