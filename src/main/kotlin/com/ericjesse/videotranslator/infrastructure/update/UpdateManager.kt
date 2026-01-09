@@ -1495,7 +1495,17 @@ class UpdateManager(
     private suspend fun installPythonOnWindows(
         onProgress: suspend (Float, String) -> Unit,
     ) {
-        onProgress(0f, "Checking for winget...")
+        onProgress(0f, "Checking for Python...")
+
+        // First check if Python is already installed
+        val existingPythonPath = findPythonPath()
+        if (existingPythonPath != null) {
+            logger.info { "Python is already installed at: $existingPythonPath" }
+            onProgress(1f, "Python is already installed")
+            return
+        }
+
+        onProgress(0.05f, "Checking for winget...")
 
         // Check if winget is available
         val wingetAvailable = try {
@@ -1526,9 +1536,11 @@ class UpdateManager(
             .start()
 
         val reader = process.inputStream.bufferedReader()
+        val outputLines = mutableListOf<String>()
         var line: String?
         while (reader.readLine().also { line = it } != null) {
             logger.debug { "[winget] $line" }
+            outputLines.add(line!!)
             when {
                 line!!.contains("Downloading", ignoreCase = true) ->
                     onProgress(0.3f, "Downloading Python...")
@@ -1542,7 +1554,14 @@ class UpdateManager(
         }
 
         val exitCode = process.waitFor()
-        if (exitCode != 0) {
+        val fullOutput = outputLines.joinToString("\n")
+
+        // Check for "already installed" or "no upgrade" messages (winget returns non-zero in these cases)
+        val alreadyInstalled = fullOutput.contains("already installed", ignoreCase = true) ||
+                fullOutput.contains("No available upgrade", ignoreCase = true) ||
+                fullOutput.contains("No newer package versions", ignoreCase = true)
+
+        if (exitCode != 0 && !alreadyInstalled) {
             throw UpdateException(
                 "Failed to install Python via winget (exit code: $exitCode). " +
                         "Please install Python manually from https://python.org and try again."
@@ -1558,8 +1577,8 @@ class UpdateManager(
             )
         }
 
-        onProgress(1f, "Python installed via winget")
-        logger.info { "Python installed successfully via winget at: $pythonPath" }
+        onProgress(1f, if (alreadyInstalled) "Python is already installed" else "Python installed via winget")
+        logger.info { "Python available at: $pythonPath" }
     }
 
     /**
