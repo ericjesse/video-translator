@@ -1324,6 +1324,30 @@ class UpdateManager(
         Files.copy(whisperPath, whisperTarget.toPath(), StandardCopyOption.REPLACE_EXISTING)
         logger.info { "Installed whisper to ${whisperTarget.absolutePath}" }
 
+        // On Windows, copy all DLLs from the whisper binary directory to the bin directory
+        // whisper.cpp releases include required DLLs (ggml.dll, whisper.dll, etc.) that must be
+        // in the same directory as the executable
+        if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
+            val whisperBinaryDir = whisperPath.parent?.toFile()
+            val binDir = File(platformPaths.binDir)
+
+            if (whisperBinaryDir != null && whisperBinaryDir.exists()) {
+                val dllFiles = whisperBinaryDir.listFiles { file ->
+                    file.isFile && file.extension.equals("dll", ignoreCase = true)
+                } ?: emptyArray()
+
+                for (dllFile in dllFiles) {
+                    val targetDll = File(binDir, dllFile.name)
+                    Files.copy(dllFile.toPath(), targetDll.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    logger.info { "Copied DLL: ${dllFile.name} to ${targetDll.absolutePath}" }
+                }
+
+                if (dllFiles.isNotEmpty()) {
+                    logger.info { "Copied ${dllFiles.size} DLL(s) to bin directory" }
+                }
+            }
+        }
+
         // Make executable on Unix
         if (platformPaths.operatingSystem != OperatingSystem.WINDOWS) {
             whisperTarget.setExecutable(true)
