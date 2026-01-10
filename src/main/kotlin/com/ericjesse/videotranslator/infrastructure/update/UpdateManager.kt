@@ -1872,10 +1872,36 @@ class UpdateManager(
         // LibreTranslate installs PyTorch with CUDA support which requires MKL libraries that are often missing
         // We need to force-reinstall to overwrite the CUDA version with the CPU-only version
         // We also need to install intel-openmp which provides the OpenMP runtime (libomp) that c10.dll depends on
+        // And reinstall ctranslate2 and argostranslate after PyTorch CPU to ensure binary compatibility
         if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
-            send(DownloadProgress(0.65f, "Installing Intel OpenMP runtime..."))
+            send(DownloadProgress(0.40f, "Installing PyTorch (CPU version)..."))
+
+            // First, uninstall the CUDA version of torch completely to avoid conflicts
+            val uninstallResult = runCommand(
+                listOf(venvPip, "uninstall", "-y", "torch", "torchvision", "torchaudio"),
+                timeoutMinutes = 5
+            )
+            logger.info { "Uninstalled existing PyTorch: ${uninstallResult.output}" }
+
+            // Install PyTorch CPU-only version (no CUDA dependencies)
+            val torchResult = runCommand(
+                listOf(
+                    venvPip, "install", "--no-cache-dir", "torch",
+                    "--index-url", "https://download.pytorch.org/whl/cpu"
+                ),
+                timeoutMinutes = 10
+            )
+            if (!torchResult.success) {
+                logger.warn { "PyTorch CPU installation warning: ${torchResult.error}" }
+            } else {
+                logger.info { "Installed PyTorch CPU-only version" }
+            }
+
+            // Install Intel OpenMP runtime - required for PyTorch c10.dll on Windows
+            // This provides libomp140.x86_64.dll and other OpenMP libraries
+            send(DownloadProgress(0.55f, "Installing Intel OpenMP runtime..."))
             val openmpResult = runCommand(
-                listOf(venvPip, "install", "intel-openmp"),
+                listOf(venvPip, "install", "--no-cache-dir", "intel-openmp"),
                 timeoutMinutes = 5
             )
             if (!openmpResult.success) {
@@ -1884,19 +1910,28 @@ class UpdateManager(
                 logger.info { "Installed Intel OpenMP runtime" }
             }
 
-            send(DownloadProgress(0.70f, "Installing PyTorch (CPU version)..."))
-            val torchResult = runCommand(
-                listOf(
-                    venvPip, "install", "--force-reinstall", "torch",
-                    "--index-url", "https://download.pytorch.org/whl/cpu"
-                ),
+            // Reinstall ctranslate2 to ensure it's built against CPU-only PyTorch
+            send(DownloadProgress(0.65f, "Reinstalling CTranslate2..."))
+            val ct2Result = runCommand(
+                listOf(venvPip, "install", "--force-reinstall", "--no-cache-dir", "ctranslate2"),
                 timeoutMinutes = 10
             )
-            if (!torchResult.success) {
-                logger.warn { "PyTorch CPU installation warning: ${torchResult.error}" }
-                // Continue anyway, LibreTranslate might still work with default torch
+            if (!ct2Result.success) {
+                logger.warn { "CTranslate2 reinstallation warning: ${ct2Result.error}" }
             } else {
-                logger.info { "Replaced PyTorch with CPU-only version" }
+                logger.info { "Reinstalled CTranslate2 for CPU-only PyTorch" }
+            }
+
+            // Reinstall argostranslate to ensure all translation binaries are consistent
+            send(DownloadProgress(0.75f, "Reinstalling Argos Translate..."))
+            val argosResult = runCommand(
+                listOf(venvPip, "install", "--force-reinstall", "--no-cache-dir", "argostranslate"),
+                timeoutMinutes = 10
+            )
+            if (!argosResult.success) {
+                logger.warn { "Argos Translate reinstallation warning: ${argosResult.error}" }
+            } else {
+                logger.info { "Reinstalled Argos Translate" }
             }
         }
 

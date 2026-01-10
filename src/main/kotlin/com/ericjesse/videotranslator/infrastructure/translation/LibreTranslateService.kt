@@ -329,13 +329,65 @@ class LibreTranslateService(
      * Creates a Python script that disables SSL verification before running LibreTranslate.
      * This is needed because LibreTranslate downloads models on first run and macOS
      * has SSL certificate issues with Python's default configuration.
+     *
+     * On Windows, this script also sets up DLL search paths for PyTorch dependencies
+     * before any imports that might trigger torch loading.
      */
     private fun createSslPatchedStartupScript(venvDir: File, port: Int, loadOnly: Boolean): String {
         val loadOnlyArg = if (loadOnly) ", '--load-only'" else ""
         return """
+import os
+import sys
+
+# On Windows, we need to add DLL directories BEFORE importing torch or anything that imports it
+# This fixes WinError 1114 "DLL initialization routine failed" for c10.dll
+if sys.platform == 'win32':
+    # Find site-packages directory
+    site_packages = None
+    for path in sys.path:
+        if 'site-packages' in path and os.path.isdir(path):
+            site_packages = path
+            break
+
+    if site_packages:
+        # Add Intel OpenMP DLL directory (if installed via pip)
+        intel_openmp_dirs = [
+            os.path.join(site_packages, 'intel_openmp', 'bin'),
+            os.path.join(site_packages, 'intel_openmp', 'Library', 'bin'),
+        ]
+        for dll_dir in intel_openmp_dirs:
+            if os.path.isdir(dll_dir):
+                try:
+                    os.add_dll_directory(dll_dir)
+                except Exception:
+                    pass
+
+        # Add PyTorch lib directory
+        torch_lib_dir = os.path.join(site_packages, 'torch', 'lib')
+        if os.path.isdir(torch_lib_dir):
+            try:
+                os.add_dll_directory(torch_lib_dir)
+            except Exception:
+                pass
+
+        # Add ctranslate2 lib directory if it exists
+        ct2_lib_dir = os.path.join(site_packages, 'ctranslate2')
+        if os.path.isdir(ct2_lib_dir):
+            try:
+                os.add_dll_directory(ct2_lib_dir)
+            except Exception:
+                pass
+
+        # Also add to PATH as a fallback for older Python or DLL loading mechanisms
+        dll_paths = []
+        for dll_dir in intel_openmp_dirs + [torch_lib_dir, ct2_lib_dir]:
+            if os.path.isdir(dll_dir):
+                dll_paths.append(dll_dir)
+        if dll_paths:
+            os.environ['PATH'] = ';'.join(dll_paths) + ';' + os.environ.get('PATH', '')
+
 import ssl
 import urllib.request
-import os
 
 # Disable SSL verification globally (needed for downloading language models on macOS)
 ssl._create_default_https_context = ssl._create_unverified_context
