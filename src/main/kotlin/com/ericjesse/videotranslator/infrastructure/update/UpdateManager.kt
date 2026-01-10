@@ -1868,10 +1868,22 @@ class UpdateManager(
             throw UpdateException("Failed to install LibreTranslate: ${installResult.error}")
         }
 
-        // On Windows, force-reinstall PyTorch CPU-only version AFTER LibreTranslate to fix fbgemm.dll/MKL dependency issues
-        // LibreTranslate installs PyTorch with CUDA support which requires Intel MKL libraries that are often missing
+        // On Windows, force-reinstall PyTorch CPU-only version AFTER LibreTranslate to fix DLL dependency issues
+        // LibreTranslate installs PyTorch with CUDA support which requires MKL libraries that are often missing
         // We need to force-reinstall to overwrite the CUDA version with the CPU-only version
+        // We also need to install intel-openmp which provides the OpenMP runtime (libomp) that c10.dll depends on
         if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
+            send(DownloadProgress(0.65f, "Installing Intel OpenMP runtime..."))
+            val openmpResult = runCommand(
+                listOf(venvPip, "install", "intel-openmp"),
+                timeoutMinutes = 5
+            )
+            if (!openmpResult.success) {
+                logger.warn { "Intel OpenMP installation warning: ${openmpResult.error}" }
+            } else {
+                logger.info { "Installed Intel OpenMP runtime" }
+            }
+
             send(DownloadProgress(0.70f, "Installing PyTorch (CPU version)..."))
             val torchResult = runCommand(
                 listOf(
