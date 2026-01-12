@@ -1889,20 +1889,20 @@ class UpdateManager(
             )
             logger.info { "Uninstalled existing PyTorch: ${uninstallResult.output}" }
 
-            // Install PyTorch CPU-only version 2.1.2 (no CUDA dependencies)
-            // Using a specific older version that's known to work well on Windows
-            // The CPU wheel from pytorch.org bundles its own OpenMP (libiomp5md.dll)
+            // Install PyTorch CPU-only version 1.13.1 from PyTorch's CPU index
+            // This is a very stable version known to work well on Windows
             val torchResult = runCommand(
                 listOf(
-                    venvPip, "install", "--no-cache-dir", "torch==2.1.2",
+                    venvPip, "install", "--no-cache-dir",
+                    "torch==1.13.1+cpu",
                     "--index-url", "https://download.pytorch.org/whl/cpu"
                 ),
-                timeoutMinutes = 10
+                timeoutMinutes = 15
             )
             if (!torchResult.success) {
-                logger.warn { "PyTorch CPU installation warning: ${torchResult.error}" }
+                logger.warn { "PyTorch installation warning: ${torchResult.error}" }
             } else {
-                logger.info { "Installed PyTorch CPU-only version 2.1.2" }
+                logger.info { "Installed PyTorch 1.13.1+cpu" }
             }
 
             // Reinstall ctranslate2 to ensure it's built against CPU-only PyTorch

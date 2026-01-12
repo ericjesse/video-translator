@@ -102,8 +102,8 @@ class LibreTranslateService(
                     else -> "${venvDir.absolutePath}/bin/python"
                 }
 
-                // Create a wrapper script that patches SSL before running LibreTranslate
-                val wrapperScript = createSslPatchedStartupScript(venvDir, port, loadOnly)
+                // Create a wrapper script to start LibreTranslate
+                val wrapperScript = createStartupScript(venvDir, port, loadOnly)
 
                 // Write script to a temp file instead of using -c (which has issues on Windows with quotes)
                 val scriptFile = File(platformPaths.libreTranslateDir, "start_server.py")
@@ -326,16 +326,13 @@ class LibreTranslateService(
     }
 
     /**
-     * Creates a Python script that disables SSL verification before running LibreTranslate.
-     * This is needed because LibreTranslate downloads models on first run and macOS
-     * has SSL certificate issues with Python's default configuration.
+     * Creates a Python script to start LibreTranslate.
      *
-     * On Windows, this script also sets up DLL search paths for PyTorch dependencies
+     * On Windows, this script sets up DLL search paths for PyTorch dependencies
      * before any imports that might trigger torch loading.
      */
-    private fun createSslPatchedStartupScript(venvDir: File, port: Int, loadOnly: Boolean): String {
+    private fun createStartupScript(venvDir: File, port: Int, loadOnly: Boolean): String {
         val loadOnlyArg = if (loadOnly) ", '--load-only'" else ""
-        // Use the actual venv path directly instead of searching sys.path
         val sitePackagesPath = when (platformPaths.operatingSystem) {
             OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Lib\\site-packages"
             else -> "${venvDir.absolutePath}/lib/python3.11/site-packages"
@@ -344,197 +341,42 @@ class LibreTranslateService(
 import os
 import sys
 
-# On Windows, we need to set up DLLs BEFORE importing torch or anything that imports it
-# This fixes WinError 1114 "DLL initialization routine failed" for c10.dll
+# On Windows, set up DLL paths BEFORE importing torch
 if sys.platform == 'win32':
-    print("[DLL Setup] Starting Windows DLL directory configuration...")
-
-    # Set environment variables to allow duplicate OpenMP libraries
+    print("[Setup] Configuring Windows DLL paths...")
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-    # Use the known site-packages path directly
     site_packages = r'$sitePackagesPath'
-    print(f"[DLL Setup] Site-packages path: {site_packages}")
+    torch_lib = os.path.join(site_packages, 'torch', 'lib')
 
-    if os.path.isdir(site_packages):
-        # PyTorch lib directory
-        torch_lib_dir = os.path.join(site_packages, 'torch', 'lib')
+    if os.path.isdir(torch_lib):
+        # Add torch lib to DLL search path and PATH
+        os.add_dll_directory(torch_lib)
+        os.environ['PATH'] = torch_lib + ';' + os.environ.get('PATH', '')
+        print(f"[Setup] Added torch lib to PATH: {torch_lib}")
 
-        if os.path.isdir(torch_lib_dir):
-            print(f"[DLL Setup] Found torch lib: {torch_lib_dir}")
+        # Change to torch lib directory during import
+        original_cwd = os.getcwd()
+        os.chdir(torch_lib)
 
-            # List DLLs for debugging
-            dlls = [f for f in os.listdir(torch_lib_dir) if f.endswith('.dll')]
-            print(f"[DLL Setup] DLLs in torch/lib: {dlls}")
+        try:
+            import torch
+            print(f"[Setup] Loaded torch {torch.__version__}")
+        except Exception as e:
+            print(f"[Setup] torch import failed: {e}")
+        finally:
+            os.chdir(original_cwd)
 
-            # Method 1: Add to DLL search path (Python 3.8+)
-            os.add_dll_directory(torch_lib_dir)
-            print(f"[DLL Setup] Added DLL directory: {torch_lib_dir}")
+    # Add ctranslate2 DLL directory
+    ct2_dir = os.path.join(site_packages, 'ctranslate2')
+    if os.path.isdir(ct2_dir):
+        os.add_dll_directory(ct2_dir)
 
-            # Method 2: Prepend to PATH
-            os.environ['PATH'] = torch_lib_dir + ';' + os.environ.get('PATH', '')
-            print("[DLL Setup] Updated PATH")
-
-            # Method 3: Change working directory to torch lib temporarily during import
-            # This is the most reliable method for resolving DLL dependencies on Windows
-            original_cwd = os.getcwd()
-            os.chdir(torch_lib_dir)
-            print(f"[DLL Setup] Changed working directory to: {torch_lib_dir}")
-        else:
-            print(f"[DLL Setup] WARNING: torch lib not found at {torch_lib_dir}")
-            original_cwd = None
-
-        # ctranslate2 directory
-        ct2_dir = os.path.join(site_packages, 'ctranslate2')
-        if os.path.isdir(ct2_dir):
-            os.add_dll_directory(ct2_dir)
-            print(f"[DLL Setup] Added ctranslate2 DLL directory: {ct2_dir}")
-    else:
-        print(f"[DLL Setup] ERROR: site-packages not found at {site_packages}")
-        original_cwd = None
-
-    print("[DLL Setup] Configuration complete")
-
-    # Import torch while in the torch/lib directory
-    try:
-        import torch
-        print(f"[DLL Setup] Successfully imported torch {torch.__version__}")
-    except Exception as e:
-        print(f"[DLL Setup] Failed to import torch: {e}")
-
-    # Restore original working directory
-    if original_cwd:
-        os.chdir(original_cwd)
-        print(f"[DLL Setup] Restored working directory")
-
-import ssl
-import urllib.request
-
-# Disable SSL verification globally (needed for downloading language models on macOS)
-ssl._create_default_https_context = ssl._create_unverified_context
-
-# Set environment variables to disable SSL verification for various libraries
-os.environ['PYTHONHTTPSVERIFY'] = '0'
-os.environ['CURL_CA_BUNDLE'] = ''
-os.environ['REQUESTS_CA_BUNDLE'] = ''
-
-# Patch urllib to use unverified context
-try:
-    urllib.request.urlopen.__globals__['_opener'] = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=ssl._create_unverified_context())
-    )
-except Exception:
-    pass
-
-# Patch requests library if available (used by argos-translate for model downloads)
-try:
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.ssl_ import create_urllib3_context
-
-    class SSLAdapter(HTTPAdapter):
-        def init_poolmanager(self, *args, **kwargs):
-            ctx = create_urllib3_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            kwargs['ssl_context'] = ctx
-            return super().init_poolmanager(*args, **kwargs)
-
-    # Patch default session
-    original_session = requests.Session
-    def patched_session(*args, **kwargs):
-        session = original_session(*args, **kwargs)
-        session.verify = False
-        session.mount('https://', SSLAdapter())
-        return session
-    requests.Session = patched_session
-
-    # Also disable warnings
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except ImportError:
-    pass
-
-# Download required language models if not already installed
-try:
-    import argostranslate.package
-    import argostranslate.translate
-
-    print("Checking and downloading required language models...")
-
-    # Update package index
-    argostranslate.package.update_package_index()
-    available_packages = argostranslate.package.get_available_packages()
-    installed_packages = argostranslate.package.get_installed_packages()
-    installed_codes = {(p.from_code, p.to_code) for p in installed_packages}
-
-    # Required language pairs for Video Translator
-    required_pairs = [
-        ("en", "fr"), ("fr", "en"),  # English <-> French
-        ("en", "de"), ("de", "en"),  # English <-> German
-    ]
-
-    for from_code, to_code in required_pairs:
-        if (from_code, to_code) not in installed_codes:
-            # Find and install the package
-            for pkg in available_packages:
-                if pkg.from_code == from_code and pkg.to_code == to_code:
-                    print(f"Downloading {from_code} -> {to_code} language model...")
-                    download_path = pkg.download()
-                    argostranslate.package.install_from_path(download_path)
-                    print(f"Installed {from_code} -> {to_code}")
-                    break
-        else:
-            print(f"Language model {from_code} -> {to_code} already installed")
-
-    print("Language models ready")
-except Exception as e:
-    print(f"Warning: Could not download language models: {e}")
-    print("Translation may fail for some language pairs")
-
-# Now run LibreTranslate
-import sys
+# Run LibreTranslate
 sys.argv = ['libretranslate', '--host', '$DEFAULT_HOST', '--port', '$port'$loadOnlyArg]
-
 from libretranslate.main import main
 main()
 """.trimIndent()
-    }
-
-    /**
-     * Finds the certifi CA bundle by running Python in the virtual environment.
-     * This is needed to fix SSL certificate verification on macOS.
-     */
-    private fun findCertifiCaBundle(venvDir: File): String? {
-        val pythonPath = when (platformPaths.operatingSystem) {
-            OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Scripts\\python.exe"
-            else -> "${venvDir.absolutePath}/bin/python"
-        }
-
-        if (!File(pythonPath).exists()) {
-            logger.debug { "Python not found at: $pythonPath" }
-            return null
-        }
-
-        return try {
-            val process = ProcessBuilder(
-                pythonPath, "-c", "import certifi; print(certifi.where())"
-            ).redirectErrorStream(true).start()
-
-            val output = process.inputStream.bufferedReader().readText().trim()
-            val exitCode = process.waitFor()
-
-            if (exitCode == 0 && output.isNotEmpty() && File(output).exists()) {
-                logger.info { "Found certifi CA bundle at: $output" }
-                output
-            } else {
-                logger.debug { "certifi not available or CA bundle not found: $output" }
-                null
-            }
-        } catch (e: Exception) {
-            logger.debug { "Failed to get certifi path: ${e.message}" }
-            null
-        }
     }
 
     /**
