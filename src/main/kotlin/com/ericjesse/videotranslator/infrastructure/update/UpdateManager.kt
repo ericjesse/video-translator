@@ -1874,6 +1874,12 @@ class UpdateManager(
         // We also need to install intel-openmp which provides the OpenMP runtime (libomp) that c10.dll depends on
         // And reinstall ctranslate2 and argostranslate after PyTorch CPU to ensure binary compatibility
         if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
+            // First, ensure Visual C++ Redistributable is installed (required for PyTorch DLLs)
+            send(DownloadProgress(0.35f, "Checking Visual C++ Runtime..."))
+            ensureVcRedistInstalled { progress, message ->
+                send(DownloadProgress(0.35f + progress * 0.05f, message))
+            }
+
             send(DownloadProgress(0.40f, "Installing PyTorch (CPU version)..."))
 
             // First, uninstall the CUDA version of torch completely to avoid conflicts
