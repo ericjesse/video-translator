@@ -335,6 +335,11 @@ class LibreTranslateService(
      */
     private fun createSslPatchedStartupScript(venvDir: File, port: Int, loadOnly: Boolean): String {
         val loadOnlyArg = if (loadOnly) ", '--load-only'" else ""
+        // Use the actual venv path directly instead of searching sys.path
+        val sitePackagesPath = when (platformPaths.operatingSystem) {
+            OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Lib\\site-packages"
+            else -> "${venvDir.absolutePath}/lib/python3.11/site-packages"
+        }
         return """
 import os
 import sys
@@ -342,49 +347,66 @@ import sys
 # On Windows, we need to add DLL directories BEFORE importing torch or anything that imports it
 # This fixes WinError 1114 "DLL initialization routine failed" for c10.dll
 if sys.platform == 'win32':
-    # Find site-packages directory
-    site_packages = None
-    for path in sys.path:
-        if 'site-packages' in path and os.path.isdir(path):
-            site_packages = path
-            break
+    print("[DLL Setup] Starting Windows DLL directory configuration...")
 
-    if site_packages:
-        # Add Intel OpenMP DLL directory (if installed via pip)
-        intel_openmp_dirs = [
-            os.path.join(site_packages, 'intel_openmp', 'bin'),
-            os.path.join(site_packages, 'intel_openmp', 'Library', 'bin'),
-        ]
-        for dll_dir in intel_openmp_dirs:
-            if os.path.isdir(dll_dir):
-                try:
-                    os.add_dll_directory(dll_dir)
-                except Exception:
-                    pass
+    # Set environment variable to allow duplicate OpenMP libraries
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-        # Add PyTorch lib directory
+    # Use the known site-packages path directly
+    site_packages = r'$sitePackagesPath'
+    print(f"[DLL Setup] Site-packages path: {site_packages}")
+
+    if os.path.isdir(site_packages):
+        # Collect all DLL directories to add
+        dll_dirs_to_add = []
+
+        # PyTorch lib directory - this is the most critical one
         torch_lib_dir = os.path.join(site_packages, 'torch', 'lib')
         if os.path.isdir(torch_lib_dir):
-            try:
-                os.add_dll_directory(torch_lib_dir)
-            except Exception:
-                pass
+            dll_dirs_to_add.append(torch_lib_dir)
+            print(f"[DLL Setup] Found torch lib: {torch_lib_dir}")
+        else:
+            print(f"[DLL Setup] WARNING: torch lib not found at {torch_lib_dir}")
 
-        # Add ctranslate2 lib directory if it exists
-        ct2_lib_dir = os.path.join(site_packages, 'ctranslate2')
-        if os.path.isdir(ct2_lib_dir):
-            try:
-                os.add_dll_directory(ct2_lib_dir)
-            except Exception:
-                pass
+        # Intel OpenMP directories (multiple possible locations)
+        intel_openmp_locations = [
+            os.path.join(site_packages, 'intel_openmp', 'bin'),
+            os.path.join(site_packages, 'intel_openmp', 'Library', 'bin'),
+            os.path.join(site_packages, 'intel_openmp'),
+        ]
+        for loc in intel_openmp_locations:
+            if os.path.isdir(loc):
+                dll_dirs_to_add.append(loc)
+                print(f"[DLL Setup] Found intel_openmp: {loc}")
 
-        # Also add to PATH as a fallback for older Python or DLL loading mechanisms
-        dll_paths = []
-        for dll_dir in intel_openmp_dirs + [torch_lib_dir, ct2_lib_dir]:
-            if os.path.isdir(dll_dir):
-                dll_paths.append(dll_dir)
-        if dll_paths:
-            os.environ['PATH'] = ';'.join(dll_paths) + ';' + os.environ.get('PATH', '')
+        # ctranslate2 directory
+        ct2_dir = os.path.join(site_packages, 'ctranslate2')
+        if os.path.isdir(ct2_dir):
+            dll_dirs_to_add.append(ct2_dir)
+            print(f"[DLL Setup] Found ctranslate2: {ct2_dir}")
+
+        # Add all directories using os.add_dll_directory (Python 3.8+)
+        for dll_dir in dll_dirs_to_add:
+            try:
+                os.add_dll_directory(dll_dir)
+                print(f"[DLL Setup] Added DLL directory: {dll_dir}")
+            except Exception as e:
+                print(f"[DLL Setup] Failed to add {dll_dir}: {e}")
+
+        # Also prepend to PATH as fallback
+        if dll_dirs_to_add:
+            new_path = ';'.join(dll_dirs_to_add) + ';' + os.environ.get('PATH', '')
+            os.environ['PATH'] = new_path
+            print(f"[DLL Setup] Updated PATH with {len(dll_dirs_to_add)} directories")
+
+        # List DLLs in torch/lib for debugging
+        if os.path.isdir(torch_lib_dir):
+            dlls = [f for f in os.listdir(torch_lib_dir) if f.endswith('.dll')]
+            print(f"[DLL Setup] DLLs in torch/lib: {dlls[:10]}{'...' if len(dlls) > 10 else ''}")
+    else:
+        print(f"[DLL Setup] ERROR: site-packages not found at {site_packages}")
+
+    print("[DLL Setup] Configuration complete")
 
 import ssl
 import urllib.request
