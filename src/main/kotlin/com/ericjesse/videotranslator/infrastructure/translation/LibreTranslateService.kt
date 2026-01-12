@@ -327,9 +327,6 @@ class LibreTranslateService(
 
     /**
      * Creates a Python script to start LibreTranslate.
-     *
-     * On Windows, this script sets up DLL search paths for PyTorch dependencies
-     * before any imports that might trigger torch loading.
      */
     private fun createStartupScript(venvDir: File, port: Int, loadOnly: Boolean): String {
         val loadOnlyArg = if (loadOnly) ", '--load-only'" else ""
@@ -341,36 +338,13 @@ class LibreTranslateService(
 import os
 import sys
 
-# On Windows, set up DLL paths BEFORE importing torch
+# On Windows, add ctranslate2 DLL directory to search path
 if sys.platform == 'win32':
-    print("[Setup] Configuring Windows DLL paths...")
-    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-
     site_packages = r'$sitePackagesPath'
-    torch_lib = os.path.join(site_packages, 'torch', 'lib')
-
-    if os.path.isdir(torch_lib):
-        # Add torch lib to DLL search path and PATH
-        os.add_dll_directory(torch_lib)
-        os.environ['PATH'] = torch_lib + ';' + os.environ.get('PATH', '')
-        print(f"[Setup] Added torch lib to PATH: {torch_lib}")
-
-        # Change to torch lib directory during import
-        original_cwd = os.getcwd()
-        os.chdir(torch_lib)
-
-        try:
-            import torch
-            print(f"[Setup] Loaded torch {torch.__version__}")
-        except Exception as e:
-            print(f"[Setup] torch import failed: {e}")
-        finally:
-            os.chdir(original_cwd)
-
-    # Add ctranslate2 DLL directory
     ct2_dir = os.path.join(site_packages, 'ctranslate2')
     if os.path.isdir(ct2_dir):
         os.add_dll_directory(ct2_dir)
+        os.environ['PATH'] = ct2_dir + ';' + os.environ.get('PATH', '')
 
 # Run LibreTranslate
 sys.argv = ['libretranslate', '--host', '$DEFAULT_HOST', '--port', '$port'$loadOnlyArg]

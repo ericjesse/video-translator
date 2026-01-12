@@ -1882,51 +1882,67 @@ class UpdateManager(
 
             send(DownloadProgress(0.40f, "Installing PyTorch (CPU version)..."))
 
-            // First, uninstall the CUDA version of torch completely to avoid conflicts
+            // Uninstall packages that have torch dependency issues on Windows
+            send(DownloadProgress(0.45f, "Removing problematic packages..."))
             val uninstallResult = runCommand(
-                listOf(venvPip, "uninstall", "-y", "torch", "torchvision", "torchaudio"),
+                listOf(
+                    venvPip, "uninstall", "-y", "torch", "torchvision", "torchaudio",
+                    "ctranslate2", "argostranslate", "argostranslatefiles", "libretranslate"
+                ),
                 timeoutMinutes = 5
             )
-            logger.info { "Uninstalled existing PyTorch: ${uninstallResult.output}" }
+            logger.info { "Uninstalled packages: ${uninstallResult.output}" }
 
-            // Install PyTorch CPU-only version 2.0.0 from PyTorch's CPU index
-            // This is the oldest stable version available in the CPU index
-            val torchResult = runCommand(
-                listOf(
-                    venvPip, "install", "--no-cache-dir",
-                    "torch==2.0.0+cpu",
-                    "--index-url", "https://download.pytorch.org/whl/cpu"
-                ),
-                timeoutMinutes = 15
-            )
-            if (!torchResult.success) {
-                logger.warn { "PyTorch installation warning: ${torchResult.error}" }
-            } else {
-                logger.info { "Installed PyTorch 2.0.0+cpu" }
-            }
+            // Install older versions of packages that work on Windows without torch
+            // Based on https://github.com/nuttolum/LibreOnWindows
+            send(DownloadProgress(0.50f, "Installing Windows-compatible packages..."))
 
-            // Reinstall ctranslate2 to ensure it's built against CPU-only PyTorch
-            send(DownloadProgress(0.65f, "Reinstalling CTranslate2..."))
-            val ct2Result = runCommand(
-                listOf(venvPip, "install", "--force-reinstall", "--no-cache-dir", "ctranslate2"),
-                timeoutMinutes = 10
-            )
-            if (!ct2Result.success) {
-                logger.warn { "CTranslate2 reinstallation warning: ${ct2Result.error}" }
-            } else {
-                logger.info { "Reinstalled CTranslate2 for CPU-only PyTorch" }
-            }
-
-            // Reinstall argostranslate to ensure all translation binaries are consistent
-            send(DownloadProgress(0.75f, "Reinstalling Argos Translate..."))
+            // Install argostranslate 1.6.1 which doesn't require torch
             val argosResult = runCommand(
-                listOf(venvPip, "install", "--force-reinstall", "--no-cache-dir", "argostranslate"),
+                listOf(venvPip, "install", "--no-cache-dir", "argostranslate==1.6.1"),
                 timeoutMinutes = 10
             )
             if (!argosResult.success) {
-                logger.warn { "Argos Translate reinstallation warning: ${argosResult.error}" }
+                logger.warn { "argostranslate installation warning: ${argosResult.error}" }
             } else {
-                logger.info { "Reinstalled Argos Translate" }
+                logger.info { "Installed argostranslate 1.6.1" }
+            }
+
+            // Install compatible version of argos-translate-files
+            send(DownloadProgress(0.60f, "Installing translation file support..."))
+            val argosFilesResult = runCommand(
+                listOf(venvPip, "install", "--no-cache-dir", "argos-translate-files==1.0.5"),
+                timeoutMinutes = 5
+            )
+            if (!argosFilesResult.success) {
+                logger.warn { "argos-translate-files installation warning: ${argosFilesResult.error}" }
+            }
+
+            // Install LibreTranslate with compatible dependencies
+            send(DownloadProgress(0.70f, "Installing LibreTranslate..."))
+            val libreResult = runCommand(
+                listOf(venvPip, "install", "--no-cache-dir", "--no-deps", "libretranslate"),
+                timeoutMinutes = 5
+            )
+            if (!libreResult.success) {
+                logger.warn { "LibreTranslate installation warning: ${libreResult.error}" }
+            }
+
+            // Install remaining dependencies with specific versions known to work
+            send(DownloadProgress(0.80f, "Installing remaining dependencies..."))
+            val depsResult = runCommand(
+                listOf(
+                    venvPip, "install", "--no-cache-dir",
+                    "flask", "flask-swagger", "flask-swagger-ui", "flask-limiter",
+                    "flask-cors", "waitress", "expiringdict", "appdirs", "apscheduler",
+                    "translatehtml", "itsdangerous", "werkzeug", "jinja2"
+                ),
+                timeoutMinutes = 10
+            )
+            if (!depsResult.success) {
+                logger.warn { "Dependencies installation warning: ${depsResult.error}" }
+            } else {
+                logger.info { "Installed Windows-compatible LibreTranslate stack" }
             }
         }
 
@@ -2068,6 +2084,124 @@ class UpdateManager(
             OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Scripts\\python.exe"
             else -> "${venvDir.absolutePath}/bin/python"
         }
+    }
+
+    /**
+     * Creates a mock torch module in the virtual environment's site-packages.
+     * This provides a minimal implementation that satisfies ctranslate2's import requirements
+     * without loading PyTorch's problematic DLLs on Windows.
+     *
+     * ctranslate2 imports torch in its specs module for model conversion, but the actual
+     * translation inference doesn't require torch. This mock allows imports to succeed.
+     */
+    private fun createMockTorchModule(venvDir: File) {
+        val sitePackages = File(venvDir, "Lib/site-packages")
+        val torchDir = File(sitePackages, "torch")
+
+        // Remove any existing torch directory
+        if (torchDir.exists()) {
+            torchDir.deleteRecursively()
+        }
+
+        // Create torch package directory
+        torchDir.mkdirs()
+
+        // Create __init__.py with minimal mock implementation
+        val initPy = File(torchDir, "__init__.py")
+        initPy.writeText(
+            """
+# Mock torch module for Windows compatibility
+# This provides minimal stubs to satisfy ctranslate2's import requirements
+# without loading PyTorch's DLLs which have compatibility issues on some Windows systems
+
+__version__ = "2.0.0+mock"
+
+class dtype:
+    pass
+
+float16 = dtype()
+float32 = dtype()
+float64 = dtype()
+int8 = dtype()
+int16 = dtype()
+int32 = dtype()
+int64 = dtype()
+bool = dtype()
+bfloat16 = dtype()
+
+class Tensor:
+    def __init__(self, *args, **kwargs):
+        pass
+    def numpy(self):
+        raise NotImplementedError("Mock torch does not support tensor operations")
+    def to(self, *args, **kwargs):
+        return self
+    def cpu(self):
+        return self
+    def cuda(self):
+        return self
+
+def tensor(*args, **kwargs):
+    return Tensor()
+
+def zeros(*args, **kwargs):
+    return Tensor()
+
+def ones(*args, **kwargs):
+    return Tensor()
+
+def empty(*args, **kwargs):
+    return Tensor()
+
+def from_numpy(arr):
+    return Tensor()
+
+def no_grad():
+    class NoGradContext:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    return NoGradContext()
+
+def load(*args, **kwargs):
+    raise NotImplementedError("Mock torch does not support model loading")
+
+def save(*args, **kwargs):
+    raise NotImplementedError("Mock torch does not support model saving")
+
+class device:
+    def __init__(self, name="cpu"):
+        self.type = name
+
+class nn:
+    class Module:
+        def __init__(self):
+            pass
+        def forward(self, *args, **kwargs):
+            raise NotImplementedError("Mock torch does not support nn operations")
+        def __call__(self, *args, **kwargs):
+            return self.forward(*args, **kwargs)
+        def to(self, *args, **kwargs):
+            return self
+        def eval(self):
+            return self
+        def train(self, mode=True):
+            return self
+
+class cuda:
+    @staticmethod
+    def is_available():
+        return False
+    @staticmethod
+    def device_count():
+        return 0
+
+print("[torch mock] Using mock torch module - PyTorch operations are not available")
+""".trimIndent()
+        )
+
+        logger.info { "Created mock torch module at: ${torchDir.absolutePath}" }
     }
 
     /**
