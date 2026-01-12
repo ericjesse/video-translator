@@ -1889,12 +1889,12 @@ class UpdateManager(
             )
             logger.info { "Uninstalled existing PyTorch: ${uninstallResult.output}" }
 
-            // Install PyTorch CPU-only version 1.13.1 from PyTorch's CPU index
-            // This is a very stable version known to work well on Windows
+            // Install PyTorch CPU-only version 2.0.0 from PyTorch's CPU index
+            // This is the oldest stable version available in the CPU index
             val torchResult = runCommand(
                 listOf(
                     venvPip, "install", "--no-cache-dir",
-                    "torch==1.13.1+cpu",
+                    "torch==2.0.0+cpu",
                     "--index-url", "https://download.pytorch.org/whl/cpu"
                 ),
                 timeoutMinutes = 15
@@ -1902,7 +1902,7 @@ class UpdateManager(
             if (!torchResult.success) {
                 logger.warn { "PyTorch installation warning: ${torchResult.error}" }
             } else {
-                logger.info { "Installed PyTorch 1.13.1+cpu" }
+                logger.info { "Installed PyTorch 2.0.0+cpu" }
             }
 
             // Reinstall ctranslate2 to ensure it's built against CPU-only PyTorch
