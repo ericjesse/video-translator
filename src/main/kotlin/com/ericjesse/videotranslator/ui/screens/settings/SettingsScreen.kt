@@ -2,18 +2,73 @@
 
 package com.ericjesse.videotranslator.ui.screens.settings
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Update
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -23,25 +78,29 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.infrastructure.config.*
+import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
 import com.ericjesse.videotranslator.ui.components.AppButton
 import com.ericjesse.videotranslator.ui.components.ButtonSize
 import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
-import com.ericjesse.videotranslator.ui.i18n.Locale
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.GeneralTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.SubtitlesTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranscriptionTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.TranslationTabContent
 import com.ericjesse.videotranslator.ui.screens.settings.tabs.UpdatesTabContent
 import com.ericjesse.videotranslator.ui.theme.AppColors
+import java.awt.Desktop
+import java.net.URI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
+import org.koin.mp.KoinPlatform
 
 // ========== Settings Tabs ==========
 
@@ -93,12 +152,12 @@ data class SettingsScreenState(
 
 /**
  * ViewModel for the settings screen.
+ * Uses Koin for dependency injection.
  */
 class SettingsViewModel(
-    private val appModule: AppModule,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+    private val configManager: ConfigManager = KoinPlatform.getKoin().get(),
 ) {
-    private val configManager = appModule.configManager
 
     var state by mutableStateOf(loadInitialState())
         private set
@@ -190,19 +249,18 @@ class SettingsViewModel(
 
 /**
  * Settings screen with tab-based navigation.
+ * Uses Koin for dependency injection.
  *
- * @param appModule Application module for accessing services.
  * @param onBack Callback when the back button is clicked.
  * @param modifier Modifier for the screen.
  */
 @Composable
 fun SettingsScreen(
-    appModule: AppModule,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val viewModel = remember { SettingsViewModel(appModule) }
-    val i18n = appModule.i18nManager
+    val viewModel = remember { SettingsViewModel() }
+    val i18n: I18nManager = koinInject()
     val state = viewModel.state
 
     var showUnsavedChangesDialog by remember { mutableStateOf(false) }
@@ -268,7 +326,6 @@ fun SettingsScreen(
 
             // Right column: Tab content
             SettingsTabContent(
-                appModule = appModule,
                 state = state,
                 onUpdateSettings = viewModel::updateSettings,
                 onUpdateServiceConfig = viewModel::updateServiceConfig,
@@ -446,13 +503,12 @@ private fun SettingsTabItem(
 
 @Composable
 private fun SettingsTabContent(
-    appModule: AppModule,
     state: SettingsScreenState,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onUpdateServiceConfig: ((TranslationServiceConfig) -> TranslationServiceConfig) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
+    val i18n: I18nManager = koinInject()
     val scrollState = rememberScrollState()
 
     Box(modifier = modifier) {
@@ -488,39 +544,32 @@ private fun SettingsTabContent(
         ) { tab ->
             when (tab) {
                 SettingsTab.GENERAL -> GeneralTabContent(
-                    appModule = appModule,
                     settings = state.settings,
                     onUpdateSettings = onUpdateSettings,
                     onLanguageChange = { locale ->
                         // Apply language change immediately
-                        appModule.i18nManager.setLocale(locale)
+                        i18n.setLocale(locale)
                     }
                 )
                 SettingsTab.TRANSLATION -> TranslationTabContent(
-                    appModule = appModule,
                     settings = state.settings,
                     serviceConfig = state.serviceConfig,
                     onUpdateSettings = onUpdateSettings,
                     onUpdateServiceConfig = onUpdateServiceConfig
                 )
                 SettingsTab.TRANSCRIPTION -> TranscriptionTabContent(
-                    appModule = appModule,
                     settings = state.settings,
                     onUpdateSettings = onUpdateSettings
                 )
                 SettingsTab.SUBTITLES -> SubtitlesTabContent(
-                    appModule = appModule,
                     settings = state.settings,
                     onUpdateSettings = onUpdateSettings
                 )
                 SettingsTab.UPDATES -> UpdatesTabContent(
-                    appModule = appModule,
                     settings = state.settings,
                     onUpdateSettings = onUpdateSettings
                 )
-                SettingsTab.ABOUT -> AboutTabContent(
-                    appModule = appModule
-                )
+                SettingsTab.ABOUT -> AboutTabContent()
             }
         }
         }
@@ -540,10 +589,8 @@ private fun SettingsTabContent(
 // These will be replaced with proper implementations in separate files
 
 @Composable
-private fun AboutTabContent(
-    appModule: AppModule
-) {
-    val i18n = appModule.i18nManager
+private fun AboutTabContent() {
+    val i18n: I18nManager = koinInject()
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -596,12 +643,20 @@ private fun AboutTabContent(
                 SettingsLinkRow(
                     icon = Icons.Default.Public,
                     text = "github.com/ericjesse/video-translator",
-                    onClick = { /* TODO: Open browser */ }
+                    onClick = {
+                        if (Desktop.isDesktopSupported()) {
+                            Desktop.getDesktop().browse(URI("https://github.com/ericjesse/video-translator"))
+                        }
+                    }
                 )
                 SettingsLinkRow(
                     icon = Icons.Default.Description,
                     text = "Apache License 2.0",
-                    onClick = { /* TODO: Show license */ }
+                    onClick = {
+                        if (Desktop.isDesktopSupported()) {
+                            Desktop.getDesktop().browse(URI("https://www.apache.org/licenses/LICENSE-2.0"))
+                        }
+                    }
                 )
             }
         }

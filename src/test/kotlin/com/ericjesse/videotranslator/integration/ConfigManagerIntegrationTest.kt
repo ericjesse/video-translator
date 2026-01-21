@@ -1,5 +1,9 @@
 package com.ericjesse.videotranslator.integration
 
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.domain.model.WhisperModel
 import com.ericjesse.videotranslator.infrastructure.config.AppSettings
 import com.ericjesse.videotranslator.infrastructure.config.BurnedInSettings
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
@@ -73,8 +77,8 @@ class ConfigManagerIntegrationTest {
         fun `saveSettings persists to file`() {
             val settings = AppSettings(
                 language = "de",
-                transcription = TranscriptionSettings(whisperModel = "medium"),
-                translation = TranslationSettings(defaultService = "deepl")
+                transcription = TranscriptionSettings(whisperModel = WhisperModel.MEDIUM),
+                translation = TranslationSettings(defaultService = TranslationService.DEEPL)
             )
 
             configManager.saveSettings(settings)
@@ -91,7 +95,7 @@ class ConfigManagerIntegrationTest {
         fun `getSettings returns saved settings`() {
             val settings = AppSettings(
                 language = "fr",
-                transcription = TranscriptionSettings(whisperModel = "large")
+                transcription = TranscriptionSettings(whisperModel = WhisperModel.LARGE)
             )
 
             configManager.saveSettings(settings)
@@ -99,7 +103,7 @@ class ConfigManagerIntegrationTest {
 
             val loaded = configManager.getSettings()
             assertEquals("fr", loaded.language)
-            assertEquals("large", loaded.transcription.whisperModel)
+            assertEquals(WhisperModel.LARGE, loaded.transcription.whisperModel)
         }
 
         @Test
@@ -128,11 +132,11 @@ class ConfigManagerIntegrationTest {
         fun `nested settings are persisted correctly`() {
             val settings = AppSettings(
                 transcription = TranscriptionSettings(
-                    whisperModel = "small",
+                    whisperModel = WhisperModel.SMALL,
                     preferYouTubeCaptions = false
                 ),
                 subtitle = SubtitleSettings(
-                    defaultOutputMode = "hard",
+                    defaultOutputMode = SubtitleType.BURNED_IN,
                     alwaysExportSrt = true,
                     burnedIn = BurnedInSettings(
                         fontSize = 32,
@@ -146,9 +150,9 @@ class ConfigManagerIntegrationTest {
             configManager.clearCache()
 
             val loaded = configManager.getSettings()
-            assertEquals("small", loaded.transcription.whisperModel)
+            assertEquals(WhisperModel.SMALL, loaded.transcription.whisperModel)
             assertFalse(loaded.transcription.preferYouTubeCaptions)
-            assertEquals("hard", loaded.subtitle.defaultOutputMode)
+            assertEquals(SubtitleType.BURNED_IN, loaded.subtitle.defaultOutputMode)
             assertTrue(loaded.subtitle.alwaysExportSrt)
             assertEquals(32, loaded.subtitle.burnedIn.fontSize)
             assertEquals("#FF0000", loaded.subtitle.burnedIn.fontColor)
@@ -167,10 +171,10 @@ class ConfigManagerIntegrationTest {
 
             assertEquals(1, settings.version)
             assertEquals("en", settings.language)
-            assertEquals("base", settings.transcription.whisperModel)
+            assertEquals(WhisperModel.BASE, settings.transcription.whisperModel)
             assertFalse(settings.transcription.preferYouTubeCaptions)  // Default is false - use local Whisper
-            assertEquals("libretranslate", settings.translation.defaultService)
-            assertEquals("burned_in", settings.subtitle.defaultOutputMode)
+            assertEquals(TranslationService.LIBRE_TRANSLATE, settings.translation.defaultService)
+            assertEquals(SubtitleType.BURNED_IN, settings.subtitle.defaultOutputMode)
             assertTrue(settings.updates.checkAutomatically)
             assertEquals(7, settings.updates.checkIntervalDays)
         }
@@ -179,7 +183,7 @@ class ConfigManagerIntegrationTest {
         fun `default TranscriptionSettings has expected values`() {
             val defaults = TranscriptionSettings()
 
-            assertEquals("base", defaults.whisperModel)
+            assertEquals(WhisperModel.BASE, defaults.whisperModel)
             assertFalse(defaults.preferYouTubeCaptions)  // Default is false - use local Whisper
         }
 
@@ -187,16 +191,16 @@ class ConfigManagerIntegrationTest {
         fun `default TranslationSettings has expected values`() {
             val defaults = TranslationSettings()
 
-            assertEquals("libretranslate", defaults.defaultService)
+            assertEquals(TranslationService.LIBRE_TRANSLATE, defaults.defaultService)
             assertNull(defaults.defaultSourceLanguage)
-            assertEquals("en", defaults.defaultTargetLanguage)
+            assertEquals(Language.ENGLISH, defaults.defaultTargetLanguage)
         }
 
         @Test
         fun `default SubtitleSettings has expected values`() {
             val defaults = SubtitleSettings()
 
-            assertEquals("burned_in", defaults.defaultOutputMode)
+            assertEquals(SubtitleType.BURNED_IN, defaults.defaultOutputMode)
             assertFalse(defaults.alwaysExportSrt)
             assertEquals(24, defaults.burnedIn.fontSize)
             assertEquals("#FFFFFF", defaults.burnedIn.fontColor)
@@ -263,8 +267,8 @@ class ConfigManagerIntegrationTest {
 
             assertEquals("de", settings.language)
             // All other fields should have defaults
-            assertEquals("base", settings.transcription.whisperModel)
-            assertEquals("libretranslate", settings.translation.defaultService)
+            assertEquals(WhisperModel.BASE, settings.transcription.whisperModel)
+            assertEquals(TranslationService.LIBRE_TRANSLATE, settings.translation.defaultService)
         }
 
         @Test
@@ -285,7 +289,7 @@ class ConfigManagerIntegrationTest {
             val settings = configManager.getSettings()
 
             assertEquals("en", settings.language)
-            assertEquals("tiny", settings.transcription.whisperModel)
+            assertEquals(WhisperModel.TINY, settings.transcription.whisperModel)
         }
 
         @Test
@@ -298,7 +302,7 @@ class ConfigManagerIntegrationTest {
 
             // Should return defaults due to parse failure
             assertEquals("en", settings.language)
-            assertEquals("base", settings.transcription.whisperModel)
+            assertEquals(WhisperModel.BASE, settings.transcription.whisperModel)
         }
 
         @Test
@@ -320,7 +324,7 @@ class ConfigManagerIntegrationTest {
 
             assertEquals(1, settings.version)
             assertEquals("de", settings.language)
-            assertEquals("small", settings.transcription.whisperModel)
+            assertEquals(WhisperModel.SMALL, settings.transcription.whisperModel)
         }
 
         @Test
@@ -343,8 +347,8 @@ class ConfigManagerIntegrationTest {
 
             assertTrue(settings.setupProgress.completed)
             assertEquals(5, settings.setupProgress.currentStep)
-            assertEquals("medium", settings.setupProgress.selectedWhisperModel)
-            assertEquals("deepl", settings.setupProgress.selectedTranslationService)
+            assertEquals(WhisperModel.MEDIUM, settings.setupProgress.selectedWhisperModel)
+            assertEquals(TranslationService.DEEPL, settings.setupProgress.selectedTranslationService)
             assertTrue(settings.setupProgress.dependenciesDownloaded)
         }
     }

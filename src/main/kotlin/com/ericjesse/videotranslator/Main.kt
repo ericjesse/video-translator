@@ -1,9 +1,7 @@
 package com.ericjesse.videotranslator
 
-import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.ericjesse.videotranslator.di.AppModule
@@ -13,7 +11,8 @@ import java.awt.Dimension
 import kotlin.system.exitProcess
 
 fun main() = application {
-    val appModule = AppModule()
+    // Initialize Koin dependency injection
+    AppModule.init()
 
     val windowState = rememberWindowState(
         width = 750.dp,
@@ -22,7 +21,7 @@ fun main() = application {
 
     Window(
         onCloseRequest = {
-            appModule.close()
+            AppModule.close()
             exitApplication()
             // Force JVM exit to ensure all background threads are terminated
             exitProcess(0)
@@ -35,7 +34,7 @@ fun main() = application {
         window.minimumSize = Dimension(600, 500)
 
         VideoTranslatorTheme {
-            App(appModule)
+            App()
         }
     }
 }

@@ -3,22 +3,30 @@ package com.ericjesse.videotranslator.ui.screens.main
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.domain.model.BackgroundColor
+import com.ericjesse.videotranslator.domain.model.BurnedInSubtitleStyle
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.OutputOptions
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityCheckResult
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
-import com.ericjesse.videotranslator.infrastructure.network.ConnectivityState
 import com.ericjesse.videotranslator.infrastructure.network.KnownServices
+import com.ericjesse.videotranslator.infrastructure.service.ytdlp.VideoDownloader
+import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.io.File
 import javax.swing.JFileChooser
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import org.koin.mp.KoinPlatform
 
 private val logger = KotlinLogging.logger {}
 
@@ -99,22 +107,17 @@ data class MainScreenState(
  * ViewModel for the main screen.
  *
  * Manages form state, validation, and persistence of user preferences.
+ * Uses Koin for dependency injection.
  *
- * @property appModule Application module for accessing services.
  * @property scope Coroutine scope for async operations.
  */
 class MainViewModel(
-    private val appModule: AppModule,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
+    private val configManager: ConfigManager = KoinPlatform.getKoin().get(),
+    private val videoDownloader: VideoDownloader = KoinPlatform.getKoin().get(),
+    private val i18n: I18nManager = KoinPlatform.getKoin().get(),
+    val connectivityChecker: ConnectivityChecker = KoinPlatform.getKoin().get(),
 ) {
-    private val configManager = appModule.configManager
-    private val videoDownloader = appModule.videoDownloader
-    private val i18n = appModule.i18nManager
-
-    /**
-     * Connectivity checker for network status.
-     */
-    val connectivityChecker: ConnectivityChecker = appModule.connectivityChecker
 
     /**
      * Current screen state.
@@ -138,13 +141,9 @@ class MainViewModel(
         val settings = configManager.getSettings()
 
         state = state.copy(
-            sourceLanguage = settings.translation.defaultSourceLanguage?.let { Language.fromCode(it) } ?: Language.ENGLISH,
-            targetLanguage = Language.fromCode(settings.translation.defaultTargetLanguage) ?: Language.ENGLISH,
-            subtitleType = when (settings.subtitle.defaultOutputMode) {
-                "soft" -> SubtitleType.SOFT
-                "hard", "burned_in" -> SubtitleType.BURNED_IN
-                else -> SubtitleType.BURNED_IN
-            },
+            sourceLanguage = settings.translation.defaultSourceLanguage ?: Language.ENGLISH,
+            targetLanguage = settings.translation.defaultTargetLanguage,
+            subtitleType = settings.subtitle.defaultOutputMode,
             burnedInStyle = BurnedInSubtitleStyle(
                 fontSize = settings.subtitle.burnedIn.fontSize,
                 fontColor = settings.subtitle.burnedIn.fontColor,
@@ -411,8 +410,8 @@ class MainViewModel(
             // Get the translation service to check
             val settings = configManager.getSettings()
             val translationService = when (settings.translation.defaultService) {
-                "deepl" -> KnownServices.DEEPL
-                "openai" -> KnownServices.OPENAI
+                TranslationService.DEEPL -> KnownServices.DEEPL
+                TranslationService.OPENAI -> KnownServices.OPENAI
                 else -> KnownServices.LIBRE_TRANSLATE
             }
 
@@ -512,8 +511,8 @@ class MainViewModel(
                 configManager.updateSettings { settings ->
                     settings.copy(
                         translation = settings.translation.copy(
-                            defaultSourceLanguage = state.sourceLanguage?.code,
-                            defaultTargetLanguage = state.targetLanguage.code
+                            defaultSourceLanguage = state.sourceLanguage,
+                            defaultTargetLanguage = state.targetLanguage
                         )
                     )
                 }

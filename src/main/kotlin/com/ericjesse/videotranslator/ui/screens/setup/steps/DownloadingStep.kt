@@ -52,7 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
+import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
 import com.ericjesse.videotranslator.ui.components.AppButton
 import com.ericjesse.videotranslator.ui.components.AppCard
 import com.ericjesse.videotranslator.ui.components.AppLinearProgressBar
@@ -66,6 +66,7 @@ import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
+import org.koin.compose.koinInject
 
 /**
  * Component download status.
@@ -110,14 +111,13 @@ data class ComponentDownloadState(
  */
 @Composable
 fun DownloadingStep(
-    appModule: AppModule,
     selectedWhisperModel: String,
     onComplete: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
-    val updateManager = appModule.updateManager
+    val i18n: I18nManager = koinInject()
+    val updateManager: UpdateManager = koinInject()
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 

@@ -2,51 +2,105 @@
 
 package com.ericjesse.videotranslator.ui.screens.progress
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.TranslationJob
 import com.ericjesse.videotranslator.domain.model.VideoInfo
 import com.ericjesse.videotranslator.domain.pipeline.PipelineError
 import com.ericjesse.videotranslator.domain.pipeline.PipelineStageName
-import com.ericjesse.videotranslator.ui.components.*
-import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
+import com.ericjesse.videotranslator.ui.components.AppButton
+import com.ericjesse.videotranslator.ui.components.AppCard
+import com.ericjesse.videotranslator.ui.components.ButtonSize
+import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.theme.AppColors
-import kotlinx.coroutines.delay
 import java.io.File
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+import org.koin.compose.koinInject
+import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 
 // Note: State models (ProgressScreenState, StageState, StageStatus, LogEntry, LogEntryLevel, ProgressStatus)
 // are defined in ProgressViewModel.kt to avoid duplication.
@@ -152,8 +206,8 @@ sealed class ProgressState {
  * Progress screen using ViewModel for state management.
  *
  * This is the recommended way to use ProgressScreen.
+ * Uses Koin for dependency injection.
  *
- * @param appModule Application module for services.
  * @param viewModel ViewModel managing the progress state.
  * @param onTranslateAnother Called to start a new translation.
  * @param onOpenSettings Called to open settings.
@@ -161,13 +215,12 @@ sealed class ProgressState {
  */
 @Composable
 fun ProgressScreen(
-    appModule: AppModule,
     viewModel: ProgressViewModel,
     onTranslateAnother: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
+    val i18n: I18nManager = koinInject()
     val state = viewModel.state
     var showCancelConfirmation by remember { mutableStateOf(false) }
     var logsExpanded by remember { mutableStateOf(true) }
@@ -363,7 +416,6 @@ private fun buildOutputFilesFromResult(state: ProgressScreenState, job: Translat
  */
 @Composable
 fun ProgressScreen(
-    appModule: AppModule,
     job: TranslationJob,
     progressState: ProgressState,
     logs: List<LegacyLogEntry>,
@@ -374,7 +426,7 @@ fun ProgressScreen(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
+    val i18n: I18nManager = koinInject()
     var showCancelConfirmation by remember { mutableStateOf(false) }
     var logsExpanded by remember { mutableStateOf(true) }
 

@@ -58,7 +58,6 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.Language
 import com.ericjesse.videotranslator.infrastructure.config.AppSettings
 import com.ericjesse.videotranslator.ui.components.AppButton
@@ -75,6 +74,7 @@ import kotlin.system.exitProcess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.koin.compose.koinInject
 
 /**
  * General settings tab content.
@@ -93,13 +93,12 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun GeneralTabContent(
-    appModule: AppModule,
     settings: AppSettings,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onLanguageChange: ((Locale) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
+    val i18n: I18nManager = koinInject()
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -129,10 +128,13 @@ fun GeneralTabContent(
         // Default Source Language Section
         SourceLanguageSection(
             i18n = i18n,
-            currentLanguage = settings.translation.defaultSourceLanguage,
+            currentLanguage = settings.translation.defaultSourceLanguage?.code,
             onLanguageChange = { langCode ->
                 onUpdateSettings {
-                    it.copy(translation = it.translation.copy(defaultSourceLanguage = langCode))
+                    it.copy(
+                        translation = it.translation.copy(
+                        defaultSourceLanguage = langCode?.let { code -> Language.fromCode(code) }
+                    ))
                 }
             }
         )
@@ -140,10 +142,14 @@ fun GeneralTabContent(
         // Default Target Language Section
         TargetLanguageSection(
             i18n = i18n,
-            currentLanguage = settings.translation.defaultTargetLanguage,
+            currentLanguage = settings.translation.defaultTargetLanguage.code,
             onLanguageChange = { langCode ->
                 onUpdateSettings {
-                    it.copy(translation = it.translation.copy(defaultTargetLanguage = langCode))
+                    it.copy(
+                        translation = it.translation.copy(
+                            defaultTargetLanguage = Language.fromCode(langCode) ?: Language.ENGLISH
+                        )
+                    )
                 }
             }
         )
@@ -155,7 +161,6 @@ fun GeneralTabContent(
 
         // Factory Reset Section
         FactoryResetSection(
-            appModule = appModule,
             i18n = i18n
         )
     }
@@ -640,10 +645,10 @@ fun SettingsSelectionRow(
 
 @Composable
 private fun FactoryResetSection(
-    appModule: AppModule,
     i18n: I18nManager,
     modifier: Modifier = Modifier,
 ) {
+    val platformPaths: com.ericjesse.videotranslator.infrastructure.config.PlatformPaths = koinInject()
     val scope = rememberCoroutineScope()
     var showConfirmDialog by remember { mutableStateOf(false) }
     var isResetting by remember { mutableStateOf(false) }
@@ -652,7 +657,7 @@ private fun FactoryResetSection(
     // Calculate data size on first composition
     LaunchedEffect(Unit) {
         dataSize = withContext(Dispatchers.IO) {
-            appModule.platformPaths.getTotalDataSize()
+            platformPaths.getTotalDataSize()
         }
     }
 
@@ -668,7 +673,7 @@ private fun FactoryResetSection(
                 showConfirmDialog = false
                 isResetting = true
                 scope.launch {
-                    performFactoryReset(appModule)
+                    performFactoryReset(platformPaths)
                 }
             },
             onDismiss = { showConfirmDialog = false }
@@ -784,13 +789,13 @@ private fun FactoryResetSection(
 /**
  * Performs factory reset: deletes all data and restarts the application.
  */
-private suspend fun performFactoryReset(appModule: AppModule) {
+private suspend fun performFactoryReset(platformPaths: com.ericjesse.videotranslator.infrastructure.config.PlatformPaths) {
     withContext(Dispatchers.IO) {
         // Close any running services
-        appModule.close()
+        com.ericjesse.videotranslator.di.AppModule.close()
 
         // Delete all application data
-        appModule.platformPaths.deleteAllData()
+        platformPaths.deleteAllData()
 
         // Restart the application
         restartApplication()

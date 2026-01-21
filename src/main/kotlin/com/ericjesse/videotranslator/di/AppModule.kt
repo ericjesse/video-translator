@@ -1,82 +1,68 @@
 package com.ericjesse.videotranslator.di
 
-import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
-import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
-import com.ericjesse.videotranslator.infrastructure.http.HttpClientFactory
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
-import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceChecker
 import com.ericjesse.videotranslator.infrastructure.resources.ResourceManager
 import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
 import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
-import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
-import com.ericjesse.videotranslator.domain.service.VideoDownloader
-import com.ericjesse.videotranslator.domain.service.TranscriberService
-import com.ericjesse.videotranslator.domain.service.TranslatorService
-import com.ericjesse.videotranslator.domain.service.SubtitleRenderer
-import com.ericjesse.videotranslator.domain.pipeline.PipelineOrchestrator
-import com.ericjesse.videotranslator.ui.i18n.I18nManager
-import io.ktor.client.*
+import io.ktor.client.HttpClient
+import org.koin.core.context.startKoin
+import org.koin.core.context.stopKoin
+import org.koin.mp.KoinPlatform
 
 /**
- * Simple dependency injection container.
- * Provides all application dependencies.
+ * Application module that initializes and manages Koin dependency injection.
+ * Use this object to initialize the DI container at application startup
+ * and close it when the application exits.
  */
-class AppModule {
-    
-    // Infrastructure
-    val platformPaths: PlatformPaths by lazy { PlatformPaths() }
-    val configManager: ConfigManager by lazy { ConfigManager(platformPaths) }
-    val httpClient: HttpClient by lazy { HttpClientFactory.create() }
-    val processExecutor: ProcessExecutor by lazy { ProcessExecutor() }
-    val updateManager: UpdateManager by lazy { UpdateManager(httpClient, platformPaths, configManager) }
-    val connectivityChecker: ConnectivityChecker by lazy { ConnectivityChecker(httpClient) }
-    val i18nManager: I18nManager by lazy { I18nManager(configManager) }
-    val libreTranslateService: LibreTranslateService by lazy {
-        LibreTranslateService(platformPaths, httpClient)
+object AppModule {
+
+    private var isInitialized = false
+
+    /**
+     * Initializes the Koin dependency injection container.
+     * Call this once at application startup before accessing any dependencies.
+     */
+    fun init() {
+        if (isInitialized) {
+            return
+        }
+
+        startKoin {
+            modules(infrastructureModule, domainModule)
+        }
+
+        isInitialized = true
     }
 
-    // Resource Management
-    val tempFileManager: TempFileManager by lazy { TempFileManager(platformPaths) }
-    val resourceManager: ResourceManager by lazy { ResourceManager(configManager) }
-    val diskSpaceChecker: DiskSpaceChecker by lazy {
-        DiskSpaceChecker(platformPaths, tempFileManager)
-    }
-    
-    // Domain Services
-    val videoDownloader: VideoDownloader by lazy {
-        VideoDownloader(processExecutor, platformPaths, configManager)
-    }
-    val transcriberService: TranscriberService by lazy {
-        TranscriberService(processExecutor, platformPaths, configManager, tempFileManager)
-    }
-    val translatorService: TranslatorService by lazy {
-        TranslatorService(httpClient, configManager, libreTranslateService)
-    }
-    val subtitleRenderer: SubtitleRenderer by lazy { 
-        SubtitleRenderer(processExecutor, platformPaths, configManager) 
-    }
-    
-    // Pipeline
-    val pipelineOrchestrator: PipelineOrchestrator by lazy {
-        PipelineOrchestrator(
-            videoDownloader = videoDownloader,
-            transcriberService = transcriberService,
-            translatorService = translatorService,
-            subtitleRenderer = subtitleRenderer,
-            configManager = configManager,
-            resourceManager = resourceManager,
-            tempFileManager = tempFileManager,
-            diskSpaceChecker = diskSpaceChecker
-        )
-    }
-    
+    /**
+     * Closes all resources and stops the Koin container.
+     * Call this when the application is shutting down.
+     */
     fun close() {
-        libreTranslateService.dispose()
-        connectivityChecker.close()
-        resourceManager.close()
-        diskSpaceChecker.close()
-        tempFileManager.close()
-        httpClient.close()
+        if (!isInitialized) {
+            return
+        }
+
+        try {
+            val koin = KoinPlatform.getKoin()
+
+            // Close resources in reverse order of dependency
+            koin.get<LibreTranslateService>().dispose()
+            koin.get<ConnectivityChecker>().close()
+            koin.get<ResourceManager>().close()
+            koin.get<DiskSpaceChecker>().close()
+            koin.get<TempFileManager>().close()
+            koin.get<HttpClient>().close()
+        } finally {
+            stopKoin()
+            isInitialized = false
+        }
     }
+
+    /**
+     * Gets the Koin instance. Use this for direct access to the DI container.
+     * Prefer using koinInject() in Compose or constructor injection in classes.
+     */
+    fun getKoin() = KoinPlatform.getKoin()
 }

@@ -1,19 +1,41 @@
 package com.ericjesse.videotranslator.domain.pipeline
 
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.domain.service.*
-import com.ericjesse.videotranslator.domain.validation.*
+import com.ericjesse.videotranslator.domain.model.HardwareEncoder
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.TranslationResult
+import com.ericjesse.videotranslator.domain.model.WhisperModel
+import com.ericjesse.videotranslator.domain.validation.CaptionValidator
+import com.ericjesse.videotranslator.domain.validation.FileExistsAction
+import com.ericjesse.videotranslator.domain.validation.OutputAction
+import com.ericjesse.videotranslator.domain.validation.OutputError
+import com.ericjesse.videotranslator.domain.validation.OutputValidationResult
+import com.ericjesse.videotranslator.domain.validation.OutputValidator
+import com.ericjesse.videotranslator.domain.validation.TranslationValidationResult
+import com.ericjesse.videotranslator.domain.validation.TranslationValidator
+import com.ericjesse.videotranslator.domain.validation.VideoError
+import com.ericjesse.videotranslator.domain.validation.VideoValidationResult
+import com.ericjesse.videotranslator.domain.validation.VideoValidator
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
-import com.ericjesse.videotranslator.infrastructure.resources.*
+import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceCheckResult
+import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceChecker
+import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceRequirements
+import com.ericjesse.videotranslator.infrastructure.resources.ResourceCheckResult
+import com.ericjesse.videotranslator.infrastructure.resources.ResourceManager
+import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
+import com.ericjesse.videotranslator.infrastructure.service.ffmpeg.SubtitleRenderer
+import com.ericjesse.videotranslator.infrastructure.service.translation.TranslatorService
+import com.ericjesse.videotranslator.infrastructure.service.whisper.TranscriberService
+import com.ericjesse.videotranslator.infrastructure.service.ytdlp.VideoDownloader
+import io.github.oshai.kotlinlogging.KotlinLogging
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import io.github.oshai.kotlinlogging.KotlinLogging
-import java.io.File
-import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
 
@@ -50,7 +72,7 @@ sealed class PipelineStage {
  * @property resourceManager Resource manager for memory tracking.
  * @property tempFileManager Temp file manager for cleanup.
  * @property diskSpaceChecker Disk space checker.
- * @property checkpointDir Directory for saving checkpoints.
+ * @property checkpointManager Manager for pipeline checkpoints.
  */
 class PipelineOrchestrator(
     private val videoDownloader: VideoDownloader,
@@ -61,13 +83,8 @@ class PipelineOrchestrator(
     private val resourceManager: ResourceManager? = null,
     private val tempFileManager: TempFileManager? = null,
     private val diskSpaceChecker: DiskSpaceChecker? = null,
-    private val checkpointDir: File = File(System.getProperty("user.home"), ".video-translator/checkpoints")
+    private val checkpointManager: CheckpointManager = CheckpointManager(),
 ) {
-    private val json = Json {
-        prettyPrint = true
-        ignoreUnknownKeys = true
-    }
-
     private val logEvents = mutableListOf<PipelineLogEvent>()
     private val tempFiles = mutableListOf<File>()
     private var currentCheckpoint: PipelineCheckpoint? = null
@@ -77,10 +94,6 @@ class PipelineOrchestrator(
     private val captionValidator = CaptionValidator()
     private val translationValidator = TranslationValidator()
     private val outputValidator = OutputValidator()
-
-    init {
-        checkpointDir.mkdirs()
-    }
 
     /**
      * Gets all log events from the current or last pipeline run.
@@ -504,7 +517,7 @@ class PipelineOrchestrator(
         // Check memory for Whisper transcription
         resourceManager?.let { rm ->
             // Get configured Whisper model or default
-            val preferredModel = configManager?.getSettings()?.transcription?.whisperModel ?: "small"
+            val preferredModel = configManager?.getSettings()?.transcription?.whisperModel?.modelName ?: "small"
             val bestModel = rm.getBestAvailableWhisperModel(preferredModel)
 
             if (bestModel != preferredModel) {
@@ -983,43 +996,26 @@ class PipelineOrchestrator(
         translatedSubtitles: Subtitles?,
         job: TranslationJob
     ) {
-        try {
-            val checkpoint = PipelineCheckpoint(
-                jobId = jobId,
-                lastCompletedStage = stage,
-                downloadedVideoPath = videoPath,
-                subtitles = subtitles,
-                translatedSubtitles = translatedSubtitles,
-                videoInfo = job.videoInfo,
-                targetLanguage = job.targetLanguage,
-                outputOptions = job.outputOptions
-            )
+        val checkpoint = checkpointManager.saveCheckpoint(
+            jobId = jobId,
+            stage = stage,
+            videoPath = videoPath,
+            subtitles = subtitles,
+            translatedSubtitles = translatedSubtitles,
+            job = job
+        )
 
-            val checkpointFile = File(checkpointDir, "$jobId.json")
-            checkpointFile.writeText(json.encodeToString(checkpoint))
+        if (checkpoint != null) {
             currentCheckpoint = checkpoint
-
             emitLog(PipelineLogEvent.CheckpointSaved(
                 stage = stage,
-                checkpointPath = checkpointFile.absolutePath
+                checkpointPath = checkpointManager.getCheckpointDirectory().resolve("$jobId.json").absolutePath
             ))
-
-            logger.debug { "Checkpoint saved for stage: $stage" }
-        } catch (e: Exception) {
-            logger.warn { "Failed to save checkpoint: ${e.message}" }
         }
     }
 
     private fun deleteCheckpoint(jobId: String) {
-        try {
-            val checkpointFile = File(checkpointDir, "$jobId.json")
-            if (checkpointFile.exists()) {
-                checkpointFile.delete()
-                logger.debug { "Checkpoint deleted: $jobId" }
-            }
-        } catch (e: Exception) {
-            logger.warn { "Failed to delete checkpoint: ${e.message}" }
-        }
+        checkpointManager.deleteCheckpoint(jobId)
     }
 
     /**
@@ -1029,16 +1025,7 @@ class PipelineOrchestrator(
      * @return The checkpoint if found and valid, null otherwise.
      */
     fun loadCheckpoint(jobId: String): PipelineCheckpoint? {
-        return try {
-            val checkpointFile = File(checkpointDir, "$jobId.json")
-            if (!checkpointFile.exists()) return null
-
-            val checkpoint: PipelineCheckpoint = json.decodeFromString(checkpointFile.readText())
-            if (checkpoint.isValid()) checkpoint else null
-        } catch (e: Exception) {
-            logger.warn { "Failed to load checkpoint: ${e.message}" }
-            null
-        }
+        return checkpointManager.loadCheckpoint(jobId)
     }
 
     /**
@@ -1047,15 +1034,7 @@ class PipelineOrchestrator(
      * @return List of valid checkpoint job IDs.
      */
     fun listCheckpoints(): List<String> {
-        return checkpointDir.listFiles { file -> file.extension == "json" }
-            ?.mapNotNull { file ->
-                try {
-                    val checkpoint: PipelineCheckpoint = json.decodeFromString(file.readText())
-                    if (checkpoint.isValid()) checkpoint.jobId else null
-                } catch (e: Exception) {
-                    null
-                }
-            } ?: emptyList()
+        return checkpointManager.listCheckpoints()
     }
 
     // ==================== Cleanup ====================

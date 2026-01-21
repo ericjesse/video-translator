@@ -1,21 +1,43 @@
 package com.ericjesse.videotranslator.domain.service
 
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.infrastructure.config.*
+import com.ericjesse.videotranslator.domain.model.Glossary
+import com.ericjesse.videotranslator.domain.model.GlossaryEntry
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SubtitleEntry
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.TranslationException
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
+import com.ericjesse.videotranslator.infrastructure.config.TranslationSettings
+import com.ericjesse.videotranslator.infrastructure.service.translation.TranslatorService
 import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
 import com.ericjesse.videotranslator.infrastructure.translation.ServerStatus
-import io.ktor.client.*
-import io.ktor.client.engine.mock.*
-import io.ktor.client.request.*
-import io.ktor.http.*
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockRequestHandleScope
+import io.ktor.client.engine.mock.MockRequestHandler
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.request.HttpRequestData
+import io.ktor.client.request.HttpResponseData
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import io.mockk.every
+import io.mockk.mockk
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
-import io.mockk.*
-import kotlin.test.*
 
 class TranslatorServiceTest {
 
@@ -115,7 +137,7 @@ class TranslatorServiceTest {
         libreTranslateService = mockk()
 
         val settings = AppSettings(
-            translation = TranslationSettings(defaultService = "libretranslate")
+            translation = TranslationSettings(defaultService = TranslationService.LIBRE_TRANSLATE)
         )
         every { configManager.getSettings() } returns settings
 
@@ -640,7 +662,7 @@ class TranslatorServiceTest {
         @BeforeEach
         fun setupDeepL() {
             val settings = AppSettings(
-                translation = TranslationSettings(defaultService = "deepl")
+                translation = TranslationSettings(defaultService = TranslationService.DEEPL)
             )
             every { configManager.getSettings() } returns settings
 
@@ -733,7 +755,7 @@ class TranslatorServiceTest {
         @BeforeEach
         fun setupOpenAI() {
             val settings = AppSettings(
-                translation = TranslationSettings(defaultService = "openai")
+                translation = TranslationSettings(defaultService = TranslationService.OPENAI)
             )
             every { configManager.getSettings() } returns settings
 

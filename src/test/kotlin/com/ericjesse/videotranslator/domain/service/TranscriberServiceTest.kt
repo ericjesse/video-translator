@@ -13,6 +13,7 @@ import com.ericjesse.videotranslator.infrastructure.config.TranscriptionSettings
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.process.ProcessResult
+import com.ericjesse.videotranslator.infrastructure.service.whisper.TranscriberService
 import io.mockk.clearAllMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -69,7 +70,7 @@ class TranscriberServiceTest {
         every { configManager.getBinaryPath("ffprobe") } returns "/usr/local/bin/ffprobe"
 
         val settings = AppSettings(
-            transcription = TranscriptionSettings(whisperModel = "base")
+            transcription = TranscriptionSettings(whisperModel = WhisperModel.BASE)
         )
         every { configManager.getSettings() } returns settings
 

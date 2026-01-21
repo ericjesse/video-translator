@@ -1,6 +1,6 @@
-import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import java.io.ByteArrayOutputStream
 import java.time.Instant
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     kotlin("jvm") version "2.0.21"
@@ -128,6 +128,13 @@ dependencies {
     // Archive extraction (TAR.XZ, 7z support - ZIP uses JDK built-in)
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
+
+    // Dependency Injection
+    val koinVersion = "4.0.0"
+    implementation(platform("io.insert-koin:koin-bom:$koinVersion"))
+    implementation("io.insert-koin:koin-core")
+    implementation("io.insert-koin:koin-compose")
+    testImplementation("io.insert-koin:koin-test")
 
     // Testing
     testImplementation(kotlin("test"))

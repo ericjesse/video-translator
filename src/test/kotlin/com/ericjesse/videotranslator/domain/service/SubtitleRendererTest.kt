@@ -18,6 +18,7 @@ import com.ericjesse.videotranslator.infrastructure.config.AppSettings
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import com.ericjesse.videotranslator.infrastructure.service.ffmpeg.SubtitleRenderer
 import io.mockk.clearAllMocks
 import io.mockk.coEvery
 import io.mockk.every

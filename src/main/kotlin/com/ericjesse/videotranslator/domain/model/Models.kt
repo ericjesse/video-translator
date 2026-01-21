@@ -69,7 +69,26 @@ data class OutputOptions(
 @Serializable
 enum class SubtitleType {
     SOFT,      // Embedded as separate track (MKV)
-    BURNED_IN  // Rendered into video frames
+    BURNED_IN; // Rendered into video frames
+
+    /**
+     * Converts this enum to a configuration string for serialization.
+     */
+    fun toConfigString(): String = when (this) {
+        SOFT -> "soft"
+        BURNED_IN -> "burned_in"
+    }
+
+    companion object {
+        /**
+         * Creates a SubtitleType from a configuration string.
+         */
+        fun fromConfigString(value: String): SubtitleType? = when (value.lowercase()) {
+            "soft" -> SOFT
+            "burned_in" -> BURNED_IN
+            else -> null
+        }
+    }
 }
 
 /**

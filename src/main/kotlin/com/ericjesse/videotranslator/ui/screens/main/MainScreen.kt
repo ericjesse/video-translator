@@ -2,15 +2,59 @@
 
 package com.ericjesse.videotranslator.ui.screens.main
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -18,20 +62,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.BackgroundColor
 import com.ericjesse.videotranslator.domain.model.Language
 import com.ericjesse.videotranslator.domain.model.SubtitleType
 import com.ericjesse.videotranslator.domain.model.TranslationJob
 import com.ericjesse.videotranslator.domain.model.VideoInfo
-import com.ericjesse.videotranslator.ui.components.*
-import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
+import com.ericjesse.videotranslator.ui.components.AppButton
+import com.ericjesse.videotranslator.ui.components.AppCard
+import com.ericjesse.videotranslator.ui.components.ButtonSize
+import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.screens.main.components.BurnedInOptions
 import com.ericjesse.videotranslator.ui.theme.AppColors
+import org.koin.compose.koinInject
+import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 
 /**
  * Application version - should match build.gradle.kts
@@ -49,7 +95,8 @@ private const val APP_VERSION = "1.0.0"
  * - Output location with browse button
  * - Footer with settings button and translate button
  *
- * @param appModule Application module for accessing services.
+ * Uses Koin for dependency injection.
+ *
  * @param viewModel ViewModel managing the screen state.
  * @param onTranslate Callback when translation job is created.
  * @param onOpenSettings Callback when the user clicks the Settings button.
@@ -57,14 +104,13 @@ private const val APP_VERSION = "1.0.0"
  */
 @Composable
 fun MainScreen(
-    appModule: AppModule,
     viewModel: MainViewModel,
     onTranslate: (TranslationJob) -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.state
-    val i18n = appModule.i18nManager
+    val i18n: I18nManager = koinInject()
 
     MainScreenContent(
         i18n = i18n,
@@ -87,49 +133,6 @@ fun MainScreen(
     )
 }
 
-/**
- * Main screen of the application with direct state management.
- * This overload is provided for simpler use cases or testing.
- *
- * @param appModule Application module for accessing services.
- * @param onTranslate Callback when the user clicks Translate with the job parameters.
- * @param onOpenSettings Callback when the user clicks the Settings button.
- * @param modifier Modifier to be applied to the screen.
- */
-@Composable
-fun MainScreen(
-    appModule: AppModule,
-    onTranslate: (url: String, sourceLanguage: Language?, targetLanguage: Language, subtitleType: SubtitleType, exportSrt: Boolean, outputPath: String, backgroundColor: BackgroundColor, backgroundOpacity: Float) -> Unit,
-    onOpenSettings: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    // Create ViewModel internally
-    val viewModel = remember { MainViewModel(appModule) }
-
-    // Dispose ViewModel when leaving composition
-    DisposableEffect(Unit) {
-        onDispose { viewModel.dispose() }
-    }
-
-    MainScreen(
-        appModule = appModule,
-        viewModel = viewModel,
-        onTranslate = { job ->
-            onTranslate(
-                job.videoInfo.url,
-                job.sourceLanguage,
-                job.targetLanguage,
-                job.outputOptions.subtitleType,
-                job.outputOptions.exportSrt,
-                job.outputOptions.outputDirectory,
-                job.outputOptions.burnedInStyle?.backgroundColor ?: BackgroundColor.NONE,
-                job.outputOptions.burnedInStyle?.backgroundOpacity ?: 0f
-            )
-        },
-        onOpenSettings = onOpenSettings,
-        modifier = modifier
-    )
-}
 
 /**
  * Internal composable that renders the main screen content.

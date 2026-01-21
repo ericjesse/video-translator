@@ -11,6 +11,7 @@ import com.ericjesse.videotranslator.infrastructure.config.OperatingSystem
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import com.ericjesse.videotranslator.infrastructure.service.ytdlp.VideoDownloader
 import io.mockk.clearAllMocks
 import io.mockk.coEvery
 import io.mockk.coVerify

@@ -2,18 +2,43 @@
 
 package com.ericjesse.videotranslator.ui.screens.setup
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,20 +46,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.domain.model.WhisperModel
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.SetupProgress
-import com.ericjesse.videotranslator.ui.components.*
-import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialog
 import com.ericjesse.videotranslator.ui.components.dialogs.ConfirmDialogStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
-import com.ericjesse.videotranslator.ui.i18n.Locale
 import com.ericjesse.videotranslator.ui.screens.setup.steps.CompleteStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.DependenciesStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.DownloadingStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.TranslationServiceStep
 import com.ericjesse.videotranslator.ui.screens.setup.steps.WelcomeStep
 import com.ericjesse.videotranslator.ui.theme.AppColors
+import org.koin.compose.koinInject
 
 /**
  * Setup wizard steps.
@@ -121,15 +146,16 @@ class SetupWizardState(
  * - Progress persistence for resume functionality
  * - Window close confirmation dialog
  * - Smooth AnimatedContent transitions
+ *
+ * Uses Koin for dependency injection.
  */
 @Composable
 fun SetupWizard(
-    appModule: AppModule,
     onComplete: () -> Unit,
     onRequestClose: (() -> Unit)? = null
 ) {
-    val i18n = appModule.i18nManager
-    val configManager = appModule.configManager
+    val i18n: I18nManager = koinInject()
+    val configManager: ConfigManager = koinInject()
 
     // Always start from scratch - don't resume incomplete setups
     val state = remember {
@@ -148,8 +174,10 @@ fun SetupWizard(
                     setupProgress = SetupProgress(
                         completed = false,
                         currentStep = state.currentStep.index,
-                        selectedWhisperModel = state.selectedWhisperModel,
-                        selectedTranslationService = state.selectedTranslationService,
+                        selectedWhisperModel = WhisperModel.fromModelName(state.selectedWhisperModel)
+                            ?: WhisperModel.BASE,
+                        selectedTranslationService = TranslationService.fromString(state.selectedTranslationService)
+                            ?: TranslationService.LIBRE_TRANSLATE,
                         dependenciesDownloaded = state.dependenciesDownloaded
                     )
                 )
@@ -244,37 +272,38 @@ fun SetupWizard(
                             isDownloading = false
                         )
                         SetupStep.DOWNLOADING -> DownloadingStep(
-                            appModule = appModule,
                             selectedWhisperModel = state.selectedWhisperModel,
                             onComplete = { state.skipToTranslationService() },
                             onCancel = { state.goBack() }
                         )
                         SetupStep.TRANSLATION_SERVICE -> TranslationServiceStep(
-                            appModule = appModule,
                             selectedService = state.selectedTranslationService,
                             onServiceSelected = { state.selectedTranslationService = it },
                             onNext = { state.goNext() }
                         )
                         SetupStep.COMPLETE -> CompleteStep(
-                            appModule = appModule,
                             selectedWhisperModel = state.selectedWhisperModel,
                             selectedService = state.selectedTranslationService,
                             onStart = {
-                                // Mark setup as complete
+                                // Mark setup as complete - convert strings to typed enums
+                                val whisperModel = WhisperModel.fromModelName(state.selectedWhisperModel)
+                                    ?: WhisperModel.BASE
+                                val translationService = TranslationService.fromString(state.selectedTranslationService)
+                                    ?: TranslationService.LIBRE_TRANSLATE
                                 configManager.updateSettings { settings ->
                                     settings.copy(
                                         setupProgress = SetupProgress(
                                             completed = true,
                                             currentStep = SetupStep.COMPLETE.index,
-                                            selectedWhisperModel = state.selectedWhisperModel,
-                                            selectedTranslationService = state.selectedTranslationService,
+                                            selectedWhisperModel = whisperModel,
+                                            selectedTranslationService = translationService,
                                             dependenciesDownloaded = true
                                         ),
                                         translation = settings.translation.copy(
-                                            defaultService = state.selectedTranslationService
+                                            defaultService = translationService
                                         ),
                                         transcription = settings.transcription.copy(
-                                            whisperModel = state.selectedWhisperModel
+                                            whisperModel = whisperModel
                                         )
                                     )
                                 }

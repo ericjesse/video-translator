@@ -1,6 +1,18 @@
-package com.ericjesse.videotranslator.domain.service
+package com.ericjesse.videotranslator.infrastructure.service.whisper
 
-import com.ericjesse.videotranslator.domain.model.*
+import com.ericjesse.videotranslator.domain.model.AudioInfo
+import com.ericjesse.videotranslator.domain.model.AudioSegment
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SegmentationConfig
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.WhisperErrorType
+import com.ericjesse.videotranslator.domain.model.WhisperException
+import com.ericjesse.videotranslator.domain.model.WhisperModel
+import com.ericjesse.videotranslator.domain.model.WhisperOptions
+import com.ericjesse.videotranslator.domain.model.WhisperProgress
+import com.ericjesse.videotranslator.domain.model.WhisperResult
+import com.ericjesse.videotranslator.domain.model.WhisperSegment
+import com.ericjesse.videotranslator.domain.model.WhisperWord
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
@@ -9,12 +21,13 @@ import com.ericjesse.videotranslator.infrastructure.process.ProcessConfig
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
-import kotlinx.serialization.json.Json
+import com.ericjesse.videotranslator.infrastructure.service.util.SubtitleDeduplicator
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
 import kotlin.math.min
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.serialization.json.Json
 
 private val logger = KotlinLogging.logger {}
 
@@ -40,8 +53,8 @@ class TranscriberService(
     private val platformPaths: PlatformPaths,
     private val configManager: ConfigManager,
     private val tempFileManager: TempFileManager? = null,
-    private val subtitleDeduplicator: SubtitleDeduplicator = SubtitleDeduplicator()
-) {
+    private val subtitleDeduplicator: SubtitleDeduplicator = SubtitleDeduplicator(),
+) : com.ericjesse.videotranslator.domain.service.api.TranscriptionService {
 
     private var lastResult: WhisperResult? = null
     private var currentOperationId: String? = null
@@ -91,7 +104,7 @@ class TranscriberService(
     fun transcribe(
         inputPath: String,
         options: WhisperOptions = WhisperOptions(),
-        cancellationToken: CancellationToken? = null
+        cancellationToken: CancellationToken? = null,
     ): Flow<StageProgress> = channelFlow {
         val startTime = System.currentTimeMillis()
 
@@ -207,10 +220,10 @@ class TranscriberService(
      * @param sourceLanguage Source language, or null for auto-detection.
      * @return Flow of progress updates.
      */
-    fun transcribe(videoPath: String, sourceLanguage: Language?): Flow<StageProgress> {
+    override fun transcribe(videoPath: String, sourceLanguage: Language?): Flow<StageProgress> {
         val settings = configManager.getSettings()
         val options = WhisperOptions(
-            model = settings.transcription.whisperModel,
+            model = settings.transcription.whisperModel.modelName,
             language = sourceLanguage?.code,
             wordTimestamps = true
         )
@@ -222,7 +235,7 @@ class TranscriberService(
      *
      * @throws IllegalStateException if no transcription has been performed.
      */
-    fun getTranscriptionResult(): Subtitles {
+    override fun getTranscriptionResult(): Subtitles {
         val result = lastResult ?: throw IllegalStateException("No transcription result available")
         val language = Language.fromCode(result.detectedLanguage) ?: Language.ENGLISH
         return result.toSubtitles(language)
@@ -252,21 +265,21 @@ class TranscriberService(
     /**
      * Checks if Whisper is available.
      */
-    suspend fun isAvailable(): Boolean {
+    override suspend fun isAvailable(): Boolean {
         return processExecutor.isAvailable(whisperPath)
     }
 
     /**
      * Gets the installed Whisper version.
      */
-    suspend fun getVersion(): String? {
+    override suspend fun getVersion(): String? {
         return processExecutor.getVersion(whisperPath)
     }
 
     /**
      * Checks if GPU acceleration is available.
      */
-    suspend fun isGpuAvailable(): Boolean {
+    override suspend fun isGpuAvailable(): Boolean {
         return try {
             val result = processExecutor.executeAndCapture(
                 listOf(whisperPath, "--help"),
@@ -287,7 +300,7 @@ class TranscriberService(
      * @param model The model to get the path for.
      * @return Path to the model file, or null if not found.
      */
-    fun getModelPath(model: WhisperModel): String? {
+    override fun getModelPath(model: WhisperModel): String? {
         val modelFile = File(platformPaths.modelsDir, "whisper/ggml-${model.modelName}.bin")
         return if (modelFile.exists()) modelFile.absolutePath else null
     }
@@ -295,7 +308,7 @@ class TranscriberService(
     /**
      * Gets all available (downloaded) models.
      */
-    fun getAvailableModels(): List<WhisperModel> {
+    override fun getAvailableModels(): List<WhisperModel> {
         val modelsDir = File(platformPaths.modelsDir, "whisper")
         if (!modelsDir.exists()) return emptyList()
 
@@ -318,7 +331,7 @@ class TranscriberService(
      */
     private suspend fun prepareAudio(
         inputPath: String,
-        cancellationToken: CancellationToken?
+        cancellationToken: CancellationToken?,
     ): AudioInfo {
         val inputFile = File(inputPath)
         if (!inputFile.exists()) {
@@ -444,7 +457,7 @@ class TranscriberService(
     private suspend fun segmentAudio(
         audioInfo: AudioInfo,
         config: SegmentationConfig,
-        cancellationToken: CancellationToken?
+        cancellationToken: CancellationToken?,
     ): List<AudioSegment> {
         val segments = mutableListOf<AudioSegment>()
         var currentStart = 0L
@@ -509,7 +522,7 @@ class TranscriberService(
         baseProgress: Float,
         progressWeight: Float,
         cancellationToken: CancellationToken?,
-        onProgress: suspend (StageProgress) -> Unit
+        onProgress: suspend (StageProgress) -> Unit,
     ): WhisperResult {
         val modelPath = getModelPathFromSettings(options.model)
         val outputPath = File(segment.path).parentFile.resolve("output_${segment.index}")
@@ -606,7 +619,7 @@ class TranscriberService(
         audioPath: String,
         modelPath: String,
         outputPath: String,
-        options: WhisperOptions
+        options: WhisperOptions,
     ): List<String> = buildList {
         add(whisperPath)
         add("--model"); add(modelPath)
@@ -694,7 +707,7 @@ class TranscriberService(
     private fun parseWhisperProgress(
         line: String,
         segmentDuration: Long,
-        totalDuration: Long
+        totalDuration: Long,
     ): WhisperProgress? {
         // Try percentage format first
         val percentRegex = """progress\s*=?\s*(\d+(?:\.\d+)?)\s*%""".toRegex(RegexOption.IGNORE_CASE)
@@ -847,8 +860,10 @@ class TranscriberService(
                     obj["words"]?.jsonArray?.map { wordElement ->
                         val wordObj = wordElement.jsonObject
                         WhisperWord(
-                            startTime = (wordObj["start"]?.jsonPrimitive?.content?.toDoubleOrNull()?.times(1000))?.toLong() ?: 0L,
-                            endTime = (wordObj["end"]?.jsonPrimitive?.content?.toDoubleOrNull()?.times(1000))?.toLong() ?: 0L,
+                            startTime = (wordObj["start"]?.jsonPrimitive?.content?.toDoubleOrNull()
+                                ?.times(1000))?.toLong() ?: 0L,
+                            endTime = (wordObj["end"]?.jsonPrimitive?.content?.toDoubleOrNull()?.times(1000))?.toLong()
+                                ?: 0L,
                             text = wordObj["word"]?.jsonPrimitive?.content ?: "",
                             probability = wordObj["probability"]?.jsonPrimitive?.content?.toFloatOrNull()
                         )
@@ -1002,7 +1017,7 @@ class TranscriberService(
     /**
      * Sets the current operation ID for temp file tracking.
      */
-    fun setOperationId(operationId: String) {
+    override fun setOperationId(operationId: String) {
         currentOperationId = operationId
     }
 }

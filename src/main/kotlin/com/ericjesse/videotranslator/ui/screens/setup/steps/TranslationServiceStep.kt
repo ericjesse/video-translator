@@ -60,7 +60,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
 import com.ericjesse.videotranslator.ui.components.AppButton
 import com.ericjesse.videotranslator.ui.components.AppCard
@@ -68,12 +68,14 @@ import com.ericjesse.videotranslator.ui.components.ButtonSize
 import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.theme.AppColors
+import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
 import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 
 /**
@@ -118,15 +120,14 @@ sealed class ConnectionTestResult {
  */
 @Composable
 fun TranslationServiceStep(
-    appModule: AppModule,
     selectedService: String,
     onServiceSelected: (String) -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
-    val configManager = appModule.configManager
-    val httpClient = appModule.httpClient
+    val i18n: I18nManager = koinInject()
+    val configManager: ConfigManager = koinInject()
+    val httpClient: HttpClient = koinInject()
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
     val uriHandler = LocalUriHandler.current

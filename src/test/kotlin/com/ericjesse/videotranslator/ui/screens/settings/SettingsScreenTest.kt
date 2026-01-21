@@ -1,12 +1,32 @@
 package com.ericjesse.videotranslator.ui.screens.settings
 
-import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.infrastructure.config.*
-import io.mockk.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.test.*
+import com.ericjesse.videotranslator.infrastructure.config.AppSettings
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
+import com.ericjesse.videotranslator.infrastructure.config.UiSettings
+import io.mockk.Runs
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
@@ -25,7 +45,6 @@ import org.junit.jupiter.api.Test
 @DisplayName("SettingsScreen Tests")
 class SettingsScreenTest {
 
-    private lateinit var appModule: AppModule
     private lateinit var configManager: ConfigManager
     private lateinit var testDispatcher: TestDispatcher
     private lateinit var testScope: TestScope
@@ -39,10 +58,8 @@ class SettingsScreenTest {
         testScope = TestScope(testDispatcher)
         Dispatchers.setMain(testDispatcher)
 
-        appModule = mockk(relaxed = true)
         configManager = mockk(relaxed = true)
 
-        every { appModule.configManager } returns configManager
         every { configManager.getSettings() } returns defaultSettings
         every { configManager.getTranslationServiceConfig() } returns defaultServiceConfig
         coEvery { configManager.saveSettings(any()) } just Runs
@@ -53,6 +70,16 @@ class SettingsScreenTest {
     fun tearDown() {
         Dispatchers.resetMain()
         clearAllMocks()
+    }
+
+    /**
+     * Helper to create a SettingsViewModel with mocked dependencies.
+     */
+    private fun createViewModel(): SettingsViewModel {
+        return SettingsViewModel(
+            scope = testScope,
+            configManager = configManager
+        )
     }
 
     @Nested
@@ -165,7 +192,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("selectTab should change selected tab")
         fun selectTabChangesTab() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertEquals(SettingsTab.GENERAL, viewModel.state.selectedTab)
 
@@ -176,7 +203,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("selectTab should work for all tabs")
         fun selectTabWorksForAllTabs() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             SettingsTab.entries.forEach { tab ->
                 viewModel.selectTab(tab)
@@ -187,7 +214,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("Tab selection should not affect unsaved changes")
         fun tabSelectionDoesNotAffectChanges() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             // Make a change
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
@@ -208,7 +235,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("updateSettings should modify settings")
         fun updateSettingsModifies() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             val newPath = "/custom/output/path"
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = newPath)) }
@@ -219,7 +246,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("updateSettings should mark state as having unsaved changes")
         fun updateSettingsMarksUnsaved() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertFalse(viewModel.state.hasUnsavedChanges)
 
@@ -231,7 +258,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("updateSettings should not modify original settings")
         fun updateSettingsDoesNotModifyOriginal() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             val originalPath = viewModel.state.originalSettings.ui.defaultOutputDirectory
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
@@ -242,7 +269,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("updateServiceConfig should modify service config")
         fun updateServiceConfigModifies() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             val newKey = "new-api-key"
             viewModel.updateServiceConfig {
@@ -255,7 +282,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("updateServiceConfig should mark state as having unsaved changes")
         fun updateServiceConfigMarksUnsaved() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertFalse(viewModel.state.hasUnsavedChanges)
 
@@ -267,7 +294,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("Multiple updates should accumulate")
         fun multipleUpdatesAccumulate() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/path1")) }
             viewModel.updateSettings { it.copy(ui = it.ui.copy(windowWidth = 1200)) }
@@ -284,7 +311,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("saveChanges should call onSuccess when no changes")
         fun saveNoChangesCallsSuccess() = runTest {
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
 
             var successCalled = false
             viewModel.saveChanges { successCalled = true }
@@ -296,7 +323,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("saveChanges should save settings to config manager")
         fun saveChangesSavesSettings() = runTest {
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
             viewModel.saveChanges {}
@@ -308,7 +335,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("saveChanges should save service config to config manager")
         fun saveChangesSavesServiceConfig() = runTest {
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
 
             viewModel.updateServiceConfig { it.copy(deeplApiKey = "new-key") }
             viewModel.saveChanges {}
@@ -320,7 +347,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("saveChanges should set isSaving to false after save completes")
         fun saveChangesSetsSavingFalseAfterComplete() = runTest {
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
 
             viewModel.saveChanges {}
@@ -333,7 +360,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("saveChanges should update original settings after save")
         fun saveChangesUpdatesOriginal() = runTest {
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
 
             val newPath = "/new/path"
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = newPath)) }
@@ -347,7 +374,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("saveChanges should call onSuccess callback")
         fun saveChangesCallsSuccess() = runTest {
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
 
@@ -363,7 +390,7 @@ class SettingsScreenTest {
         fun saveChangesSetsSaveError() = runTest {
             coEvery { configManager.saveSettings(any()) } throws RuntimeException("Save failed")
 
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
 
             viewModel.saveChanges {}
@@ -378,7 +405,7 @@ class SettingsScreenTest {
         fun saveChangesClearsSaveErrorOnRetry() = runTest {
             coEvery { configManager.saveSettings(any()) } throws RuntimeException("Save failed")
 
-            val viewModel = SettingsViewModel(appModule, this)
+            val viewModel = createViewModel()
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
 
             // First save fails
@@ -404,7 +431,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("discardChanges should revert settings to original")
         fun discardRevertsSettings() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             val originalPath = viewModel.state.settings.ui.defaultOutputDirectory
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
@@ -418,7 +445,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("discardChanges should revert service config to original")
         fun discardRevertsServiceConfig() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             val originalKey = viewModel.state.serviceConfig.deeplApiKey
 
             viewModel.updateServiceConfig { it.copy(deeplApiKey = "new-key") }
@@ -432,7 +459,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("discardChanges should clear unsaved changes flag")
         fun discardClearsUnsavedChanges() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
             assertTrue(viewModel.state.hasUnsavedChanges)
@@ -445,7 +472,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("discardChanges should preserve selected tab")
         fun discardPreservesTab() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.selectTab(SettingsTab.ABOUT)
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
@@ -463,7 +490,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("reload should fetch fresh settings from config manager")
         fun reloadFetchesFreshSettings() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             // Configure new settings to be returned
             val newSettings = AppSettings().copy(
@@ -480,7 +507,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("reload should clear unsaved changes")
         fun reloadClearsUnsavedChanges() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.updateSettings { it.copy(ui = it.ui.copy(defaultOutputDirectory = "/new/path")) }
             assertTrue(viewModel.state.hasUnsavedChanges)
@@ -493,7 +520,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("reload should reset selected tab to GENERAL")
         fun reloadResetsTab() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.selectTab(SettingsTab.ABOUT)
             assertEquals(SettingsTab.ABOUT, viewModel.state.selectedTab)
@@ -516,7 +543,7 @@ class SettingsScreenTest {
             )
             every { configManager.getSettings() } returns customSettings
 
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertEquals("/custom/path", viewModel.state.settings.ui.defaultOutputDirectory)
         }
@@ -529,7 +556,7 @@ class SettingsScreenTest {
             )
             every { configManager.getTranslationServiceConfig() } returns customConfig
 
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertEquals("loaded-key", viewModel.state.serviceConfig.deeplApiKey)
         }
@@ -537,7 +564,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("ViewModel should set original values equal to current on init")
         fun viewModelSetsOriginalOnInit() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertEquals(viewModel.state.settings, viewModel.state.originalSettings)
             assertEquals(viewModel.state.serviceConfig, viewModel.state.originalServiceConfig)
@@ -546,7 +573,7 @@ class SettingsScreenTest {
         @Test
         @DisplayName("ViewModel should start with no unsaved changes")
         fun viewModelStartsNoUnsavedChanges() {
-            val viewModel = SettingsViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             assertFalse(viewModel.state.hasUnsavedChanges)
         }

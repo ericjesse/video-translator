@@ -1,15 +1,46 @@
 package com.ericjesse.videotranslator.ui.screens.setup.steps
 
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -18,12 +49,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.ui.components.*
-import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.ui.components.AppButton
+import com.ericjesse.videotranslator.ui.components.AppCard
+import com.ericjesse.videotranslator.ui.components.ButtonSize
+import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.theme.AppColors
 import kotlinx.coroutines.delay
+import org.koin.compose.koinInject
+import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 
 /**
  * Complete step of the setup wizard.
@@ -36,7 +71,8 @@ import kotlinx.coroutines.delay
  *
  * All elements animate on entrance with staggered timing.
  *
- * @param appModule Application module for accessing services.
+ * Uses Koin for dependency injection.
+ *
  * @param selectedWhisperModel The selected Whisper model name.
  * @param selectedService The selected translation service ID.
  * @param onStart Callback when the user clicks "Start Translating".
@@ -44,14 +80,13 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun CompleteStep(
-    appModule: AppModule,
     selectedWhisperModel: String,
     selectedService: String,
     onStart: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
-    val configManager = appModule.configManager
+    val i18n: I18nManager = koinInject()
+    val configManager: ConfigManager = koinInject()
 
     // Get installed versions
     val installedVersions = remember { configManager.getInstalledVersions() }

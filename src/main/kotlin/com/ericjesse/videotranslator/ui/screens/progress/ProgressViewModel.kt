@@ -3,30 +3,35 @@ package com.ericjesse.videotranslator.ui.screens.progress
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.ericjesse.videotranslator.di.AppModule
 import com.ericjesse.videotranslator.domain.model.TranslationJob
 import com.ericjesse.videotranslator.domain.model.TranslationResult
 import com.ericjesse.videotranslator.domain.model.VideoInfo
 import com.ericjesse.videotranslator.domain.pipeline.ErrorCode
 import com.ericjesse.videotranslator.domain.pipeline.ErrorMapper
-import com.ericjesse.videotranslator.domain.pipeline.PipelineCheckpoint
 import com.ericjesse.videotranslator.domain.pipeline.PipelineError
 import com.ericjesse.videotranslator.domain.pipeline.PipelineException
 import com.ericjesse.videotranslator.domain.pipeline.PipelineLogEvent
 import com.ericjesse.videotranslator.domain.pipeline.PipelineOrchestrator
 import com.ericjesse.videotranslator.domain.pipeline.PipelineStageName
-import com.ericjesse.videotranslator.domain.pipeline.PipelineStage as DomainPipelineStage
-import com.ericjesse.videotranslator.domain.pipeline.LogLevel as DomainLogLevel
+import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.onCompletion
 import java.awt.Desktop
 import java.io.File
 import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.launch
+import org.koin.mp.KoinPlatform
+import com.ericjesse.videotranslator.domain.pipeline.LogLevel as DomainLogLevel
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStage as DomainPipelineStage
 
 private val logger = KotlinLogging.logger {}
 
@@ -163,18 +168,17 @@ enum class LogEntryLevel {
  *
  * Connects to [PipelineOrchestrator.execute] flow and maps emissions to UI state.
  * Collects log messages for the log panel and handles cancellation.
+ * Uses Koin for dependency injection.
  *
- * @param appModule Application module for accessing services.
  * @param job The translation job to process.
  * @param scope Coroutine scope for async operations.
  */
 class ProgressViewModel(
-    private val appModule: AppModule,
     val job: TranslationJob,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+    private val i18n: I18nManager = KoinPlatform.getKoin().get(),
+    private val pipelineOrchestrator: PipelineOrchestrator = KoinPlatform.getKoin().get(),
 ) {
-    private val i18n = appModule.i18nManager
-    private val pipelineOrchestrator = appModule.pipelineOrchestrator
 
     /**
      * Current screen state.

@@ -1,17 +1,28 @@
-package com.ericjesse.videotranslator.domain.service
+package com.ericjesse.videotranslator.infrastructure.service.ytdlp
 
-import com.ericjesse.videotranslator.domain.model.*
+import com.ericjesse.videotranslator.domain.model.CaptionDownloadResult
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SubtitleEntry
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.model.YtDlpDownloadOptions
+import com.ericjesse.videotranslator.domain.model.YtDlpErrorType
+import com.ericjesse.videotranslator.domain.model.YtDlpException
+import com.ericjesse.videotranslator.domain.model.YtDlpVideoInfo
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
-import com.ericjesse.videotranslator.domain.validation.*
+import com.ericjesse.videotranslator.domain.validation.VideoError
+import com.ericjesse.videotranslator.domain.validation.VideoValidationResult
+import com.ericjesse.videotranslator.domain.validation.VideoValidator
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
-import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.process.ProcessException
+import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
+import com.ericjesse.videotranslator.infrastructure.service.util.SubtitleDeduplicator
+import io.github.oshai.kotlinlogging.KotlinLogging
+import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.json.Json
-import io.github.oshai.kotlinlogging.KotlinLogging
-import java.io.File
 
 private val logger = KotlinLogging.logger {}
 
@@ -36,8 +47,8 @@ class VideoDownloader(
     private val processExecutor: ProcessExecutor,
     private val platformPaths: PlatformPaths,
     private val configManager: ConfigManager,
-    private val subtitleDeduplicator: SubtitleDeduplicator = SubtitleDeduplicator()
-) {
+    private val subtitleDeduplicator: SubtitleDeduplicator = SubtitleDeduplicator(),
+) : com.ericjesse.videotranslator.domain.service.api.VideoDownloadService {
 
     private val ytDlpPath: String
         get() = configManager.getBinaryPath("yt-dlp")
@@ -99,7 +110,7 @@ class VideoDownloader(
      * @param url The URL to validate.
      * @return true if the URL is a valid YouTube video URL.
      */
-    fun isValidYouTubeUrl(url: String): Boolean {
+    override fun isValidYouTubeUrl(url: String): Boolean {
         return YOUTUBE_PATTERNS.any { it.matches(url.trim()) }
     }
 
@@ -109,7 +120,7 @@ class VideoDownloader(
      * @param url The YouTube URL.
      * @return The video ID, or null if the URL is invalid.
      */
-    fun extractVideoId(url: String): String? {
+    override fun extractVideoId(url: String): String? {
         for (pattern in YOUTUBE_PATTERNS) {
             val match = pattern.find(url.trim())
             if (match != null) {
@@ -148,7 +159,7 @@ class VideoDownloader(
      */
     suspend fun fetchVideoInfoFull(
         url: String,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions = YtDlpDownloadOptions(),
     ): YtDlpVideoInfo {
         validateUrl(url)
 
@@ -214,9 +225,9 @@ class VideoDownloader(
      * @param options Optional download options.
      * @return Simplified video information.
      */
-    suspend fun fetchVideoInfo(
+    override suspend fun fetchVideoInfo(
         url: String,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions,
     ): VideoInfo {
         return fetchVideoInfoFull(url, options).toVideoInfo()
     }
@@ -231,9 +242,9 @@ class VideoDownloader(
      * @param options Download options (format, speed limit, cookies, etc.).
      * @return Flow of progress updates.
      */
-    fun download(
+    override fun download(
         videoInfo: VideoInfo,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions,
     ): Flow<StageProgress> = channelFlow {
         send(StageProgress(0f, "Initializing download..."))
 
@@ -326,9 +337,9 @@ class VideoDownloader(
      * @param options Download options.
      * @return Flow of progress updates.
      */
-    fun downloadAudioOnly(
+    override fun downloadAudioOnly(
         videoInfo: VideoInfo,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions,
     ): Flow<StageProgress> {
         return download(videoInfo, options.copy(audioOnly = true))
     }
@@ -349,7 +360,7 @@ class VideoDownloader(
         videoInfo: VideoInfo,
         languages: List<String>,
         preferManual: Boolean = true,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions = YtDlpDownloadOptions(),
     ): List<CaptionDownloadResult> {
         if (languages.isEmpty()) {
             logger.debug { "No languages specified for caption extraction" }
@@ -382,7 +393,7 @@ class VideoDownloader(
         langCode: String,
         preferManual: Boolean,
         outputDir: File,
-        options: YtDlpDownloadOptions
+        options: YtDlpDownloadOptions,
     ): CaptionDownloadResult? {
         val command = buildList {
             add(ytDlpPath)
@@ -456,7 +467,7 @@ class VideoDownloader(
      * @param preferredLanguage Preferred language for captions.
      * @return Subtitles if available, null otherwise.
      */
-    suspend fun extractCaptions(videoInfo: VideoInfo, preferredLanguage: Language?): Subtitles? {
+    override suspend fun extractCaptions(videoInfo: VideoInfo, preferredLanguage: Language?): Subtitles? {
         val langCode = preferredLanguage?.code ?: "en"
         val results = extractCaptions(
             videoInfo = videoInfo,
@@ -489,7 +500,7 @@ class VideoDownloader(
      */
     suspend fun getAvailableCaptionLanguages(
         url: String,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions = YtDlpDownloadOptions(),
     ): List<String> {
         val info = fetchVideoInfoFull(url, options)
         return info.getAvailableCaptionLanguages()
@@ -504,7 +515,7 @@ class VideoDownloader(
      * @param audioOnly Whether audio-only format is used.
      * @return Absolute path to the downloaded file.
      */
-    fun getDownloadedVideoPath(videoInfo: VideoInfo, audioOnly: Boolean = false): String {
+    override fun getDownloadedVideoPath(videoInfo: VideoInfo, audioOnly: Boolean): String {
         val extension = if (audioOnly) "m4a" else "mp4"
         return File(downloadDir, "${videoInfo.id}.$extension").absolutePath
     }
@@ -514,7 +525,7 @@ class VideoDownloader(
      *
      * @return true if yt-dlp is available.
      */
-    suspend fun isAvailable(): Boolean {
+    override suspend fun isAvailable(): Boolean {
         return processExecutor.isAvailable(ytDlpPath)
     }
 
@@ -523,7 +534,7 @@ class VideoDownloader(
      *
      * @return Version string, or null if not available.
      */
-    suspend fun getVersion(): String? {
+    override suspend fun getVersion(): String? {
         return processExecutor.getVersion(ytDlpPath)
     }
 
@@ -535,7 +546,7 @@ class VideoDownloader(
      * @param videoInfo The video info to validate.
      * @return VideoValidationResult indicating if the video can be processed.
      */
-    fun validateVideo(videoInfo: VideoInfo): VideoValidationResult {
+    override fun validateVideo(videoInfo: VideoInfo): VideoValidationResult {
         return videoValidator.validate(videoInfo)
     }
 
@@ -566,7 +577,7 @@ class VideoDownloader(
      */
     suspend fun fetchAndValidateVideoInfo(
         url: String,
-        options: YtDlpDownloadOptions = YtDlpDownloadOptions()
+        options: YtDlpDownloadOptions = YtDlpDownloadOptions(),
     ): Pair<VideoInfo, VideoValidationResult> {
         // Pre-validate URL for obvious issues
         val urlValidation = videoValidator.validateUrl(url)
@@ -723,12 +734,14 @@ class VideoDownloader(
                 val millis = parts[3].toLongOrNull() ?: 0
                 (hours * 3600 + minutes * 60 + seconds) * 1000 + millis
             }
+
             3 -> { // MM:SS.mmm
                 val minutes = parts[0].toLongOrNull() ?: 0
                 val seconds = parts[1].toLongOrNull() ?: 0
                 val millis = parts[2].toLongOrNull() ?: 0
                 (minutes * 60 + seconds) * 1000 + millis
             }
+
             else -> 0
         }
     }

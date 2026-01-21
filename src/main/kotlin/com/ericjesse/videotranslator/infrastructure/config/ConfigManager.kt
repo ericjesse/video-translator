@@ -1,11 +1,20 @@
 package com.ericjesse.videotranslator.infrastructure.config
 
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.domain.model.WhisperModel
+import com.ericjesse.videotranslator.infrastructure.config.serializers.LanguageSerializer
+import com.ericjesse.videotranslator.infrastructure.config.serializers.NullableLanguageSerializer
+import com.ericjesse.videotranslator.infrastructure.config.serializers.SubtitleTypeSerializer
+import com.ericjesse.videotranslator.infrastructure.config.serializers.TranslationServiceSerializer
+import com.ericjesse.videotranslator.infrastructure.config.serializers.WhisperModelSerializer
 import com.ericjesse.videotranslator.infrastructure.security.SecureStorage
+import io.github.oshai.kotlinlogging.KotlinLogging
+import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import io.github.oshai.kotlinlogging.KotlinLogging
-import java.io.File
 
 private val logger = KotlinLogging.logger {}
 
@@ -334,51 +343,57 @@ data class AppSettings(
 data class SetupProgress(
     val completed: Boolean = false,
     val currentStep: Int = 0,
-    val selectedWhisperModel: String = "base",
-    val selectedTranslationService: String = "libretranslate",
-    val dependenciesDownloaded: Boolean = false
+    @Serializable(with = WhisperModelSerializer::class)
+    val selectedWhisperModel: WhisperModel = WhisperModel.BASE,
+    @Serializable(with = TranslationServiceSerializer::class)
+    val selectedTranslationService: TranslationService = TranslationService.LIBRE_TRANSLATE,
+    val dependenciesDownloaded: Boolean = false,
 )
 
 /**
  * Settings for audio transcription.
  *
- * @property whisperModel Whisper model size to use (tiny, base, small, medium, large).
+ * @property whisperModel Whisper model size to use.
  * @property preferYouTubeCaptions Whether to use YouTube's auto-captions when available
  *                                  instead of running local transcription.
  */
 @Serializable
 data class TranscriptionSettings(
-    val whisperModel: String = "base",
-    val preferYouTubeCaptions: Boolean = false
+    @Serializable(with = WhisperModelSerializer::class)
+    val whisperModel: WhisperModel = WhisperModel.BASE,
+    val preferYouTubeCaptions: Boolean = false,
 )
 
 /**
  * Settings for subtitle translation.
  *
- * @property defaultService Default translation service (libretranslate, deepl, openai, google).
- * @property defaultSourceLanguage Default source language code, or null for auto-detection.
- * @property defaultTargetLanguage Default target language code for translations.
+ * @property defaultService Default translation service.
+ * @property defaultSourceLanguage Default source language, or null for auto-detection.
+ * @property defaultTargetLanguage Default target language for translations.
  */
 @Serializable
 data class TranslationSettings(
-    val defaultService: String = "libretranslate",
-    val defaultSourceLanguage: String? = null,
-    val defaultTargetLanguage: String = "en"
+    @Serializable(with = TranslationServiceSerializer::class)
+    val defaultService: TranslationService = TranslationService.LIBRE_TRANSLATE,
+    @Serializable(with = NullableLanguageSerializer::class)
+    val defaultSourceLanguage: Language? = null,
+    @Serializable(with = LanguageSerializer::class)
+    val defaultTargetLanguage: Language = Language.ENGLISH,
 )
 
 /**
  * Settings for subtitle output.
  *
- * @property defaultOutputMode How subtitles are added to video: "soft" (selectable track),
- *                              "hard" (burned into video), or "srt" (separate file only).
+ * @property defaultOutputMode How subtitles are added to video: SOFT (selectable track) or BURNED_IN (hardcoded).
  * @property alwaysExportSrt Whether to always export a separate SRT file alongside the video.
  * @property burnedIn Styling options for burned-in (hardcoded) subtitles.
  */
 @Serializable
 data class SubtitleSettings(
-    val defaultOutputMode: String = "burned_in",
+    @Serializable(with = SubtitleTypeSerializer::class)
+    val defaultOutputMode: SubtitleType = SubtitleType.BURNED_IN,
     val alwaysExportSrt: Boolean = false,
-    val burnedIn: BurnedInSettings = BurnedInSettings()
+    val burnedIn: BurnedInSettings = BurnedInSettings(),
 )
 
 /**

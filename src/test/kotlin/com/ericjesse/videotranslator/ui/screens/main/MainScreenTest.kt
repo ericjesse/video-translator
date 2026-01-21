@@ -1,22 +1,35 @@
 package com.ericjesse.videotranslator.ui.screens.main
 
-import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.domain.service.VideoDownloader
+import com.ericjesse.videotranslator.domain.model.BackgroundColor
+import com.ericjesse.videotranslator.domain.model.BurnedInSubtitleStyle
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.VideoInfo
 import com.ericjesse.videotranslator.infrastructure.config.AppSettings
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
-import com.ericjesse.videotranslator.infrastructure.network.ConnectivityCheckResult
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityState
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityStatus
+import com.ericjesse.videotranslator.infrastructure.service.ytdlp.VideoDownloader
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
-import io.mockk.*
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.test.*
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
@@ -35,7 +48,6 @@ import org.junit.jupiter.api.Test
 @DisplayName("MainScreen Tests")
 class MainScreenTest {
 
-    private lateinit var appModule: AppModule
     private lateinit var configManager: ConfigManager
     private lateinit var videoDownloader: VideoDownloader
     private lateinit var i18nManager: I18nManager
@@ -49,16 +61,10 @@ class MainScreenTest {
         testScope = TestScope(testDispatcher)
         Dispatchers.setMain(testDispatcher)
 
-        appModule = mockk(relaxed = true)
         configManager = mockk(relaxed = true)
         videoDownloader = mockk(relaxed = true)
         i18nManager = mockk(relaxed = true)
         connectivityChecker = mockk(relaxed = true)
-
-        every { appModule.configManager } returns configManager
-        every { appModule.videoDownloader } returns videoDownloader
-        every { appModule.i18nManager } returns i18nManager
-        every { appModule.connectivityChecker } returns connectivityChecker
 
         every { configManager.getSettings() } returns AppSettings()
         every { i18nManager[any()] } returns "Test String"
@@ -72,6 +78,19 @@ class MainScreenTest {
     fun tearDown() {
         Dispatchers.resetMain()
         clearAllMocks()
+    }
+
+    /**
+     * Helper to create a MainViewModel with mocked dependencies.
+     */
+    private fun createViewModel(): MainViewModel {
+        return MainViewModel(
+            scope = testScope,
+            configManager = configManager,
+            videoDownloader = videoDownloader,
+            i18n = i18nManager,
+            connectivityChecker = connectivityChecker
+        )
     }
 
     @Nested
@@ -162,7 +181,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Standard YouTube watch URL should be valid")
         fun standardWatchUrlValid() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -173,7 +192,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Short YouTube URL (youtu.be) should be valid")
         fun shortUrlValid() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("https://youtu.be/dQw4w9WgXcQ")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -184,7 +203,7 @@ class MainScreenTest {
         @Test
         @DisplayName("YouTube Shorts URL should be valid")
         fun shortsUrlValid() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("https://www.youtube.com/shorts/dQw4w9WgXcQ")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -195,7 +214,7 @@ class MainScreenTest {
         @Test
         @DisplayName("HTTP URL (without HTTPS) should be valid")
         fun httpUrlValid() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("http://www.youtube.com/watch?v=dQw4w9WgXcQ")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -206,7 +225,7 @@ class MainScreenTest {
         @Test
         @DisplayName("URL without www should be valid")
         fun urlWithoutWwwValid() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("https://youtube.com/watch?v=dQw4w9WgXcQ")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -217,7 +236,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Invalid URL should set error")
         fun invalidUrlSetsError() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("https://vimeo.com/123456")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -228,7 +247,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Random text should set error")
         fun randomTextSetsError() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("not a url at all")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -239,7 +258,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Empty URL should not set error")
         fun emptyUrlNoError() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -250,7 +269,7 @@ class MainScreenTest {
         @Test
         @DisplayName("URL with extra parameters should be valid")
         fun urlWithParametersValid() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s&list=PLtest")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -266,21 +285,21 @@ class MainScreenTest {
         @Test
         @DisplayName("Source language should default to English")
         fun sourceLanguageDefaultsToEnglish() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             assertEquals(Language.ENGLISH, viewModel.state.sourceLanguage)
         }
 
         @Test
         @DisplayName("Target language should have default value")
         fun targetLanguageHasDefault() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             assertEquals(Language.ENGLISH, viewModel.state.targetLanguage)
         }
 
         @Test
         @DisplayName("Source language should be changeable")
         fun sourceLanguageChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onSourceLanguageChanged(Language.GERMAN)
             testDispatcher.scheduler.advanceUntilIdle()
@@ -291,7 +310,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Source language can be set back to null")
         fun sourceLanguageCanBeNull() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onSourceLanguageChanged(Language.GERMAN)
             testDispatcher.scheduler.advanceUntilIdle()
@@ -305,7 +324,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Target language should be changeable")
         fun targetLanguageChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onTargetLanguageChanged(Language.FRENCH)
             testDispatcher.scheduler.advanceUntilIdle()
@@ -316,7 +335,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Language changes should be persisted")
         fun languageChangesPersisted() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onSourceLanguageChanged(Language.GERMAN)
             viewModel.onTargetLanguageChanged(Language.FRENCH)
@@ -333,14 +352,14 @@ class MainScreenTest {
         @Test
         @DisplayName("Default subtitle type should be BURNED_IN")
         fun defaultSubtitleTypeBurnedIn() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             assertEquals(SubtitleType.BURNED_IN, viewModel.state.subtitleType)
         }
 
         @Test
         @DisplayName("Subtitle type should be changeable")
         fun subtitleTypeChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onSubtitleTypeChanged(SubtitleType.BURNED_IN)
 
@@ -350,7 +369,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Export SRT should be changeable")
         fun exportSrtChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             assertFalse(viewModel.state.exportSrt)
 
             viewModel.onExportSrtChanged(true)
@@ -361,7 +380,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Output directory should be changeable")
         fun outputDirectoryChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onOutputDirectoryChanged("/new/path")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -372,7 +391,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Output directory changes should be persisted")
         fun outputDirectoryPersisted() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onOutputDirectoryChanged("/new/path")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -388,7 +407,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Default burned-in style should be set")
         fun defaultBurnedInStyle() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             val style = viewModel.state.burnedInStyle
 
             assertNotNull(style)
@@ -398,7 +417,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Burned-in style should be changeable")
         fun burnedInStyleChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             val newStyle = BurnedInSubtitleStyle(
                 fontSize = 32,
                 fontColor = "#FF0000",
@@ -414,7 +433,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Background color should be changeable")
         fun backgroundColorChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onBackgroundColorChanged(BackgroundColor.BLACK)
 
@@ -424,7 +443,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Background opacity should be changeable")
         fun backgroundOpacityChangeable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             viewModel.onBackgroundOpacityChanged(0.5f)
 
@@ -439,7 +458,7 @@ class MainScreenTest {
         @Test
         @DisplayName("onTranslateClicked should return null if form is invalid")
         fun translateWithInvalidFormReturnsNull() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             val result = viewModel.onTranslateClicked()
 
@@ -454,7 +473,7 @@ class MainScreenTest {
                 internetAvailable = true
             )
 
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -473,7 +492,7 @@ class MainScreenTest {
                 internetAvailable = false
             )
 
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -499,7 +518,7 @@ class MainScreenTest {
                 duration = 213L
             )
 
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
 
@@ -520,7 +539,7 @@ class MainScreenTest {
                 internetAvailable = true
             )
 
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
             viewModel.onSubtitleTypeChanged(SubtitleType.SOFT)
@@ -543,7 +562,7 @@ class MainScreenTest {
                 internetAvailable = true
             )
 
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
             viewModel.onSubtitleTypeChanged(SubtitleType.BURNED_IN)
@@ -565,7 +584,7 @@ class MainScreenTest {
         @Test
         @DisplayName("Connectivity dialog should be dismissable")
         fun connectivityDialogDismissable() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
 
@@ -590,7 +609,7 @@ class MainScreenTest {
                 internetAvailable = false
             )
 
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             viewModel.onOutputDirectoryChanged("/home/user/videos")
             testDispatcher.scheduler.advanceUntilIdle()
@@ -614,7 +633,7 @@ class MainScreenTest {
         @Test
         @DisplayName("reset should clear all form state")
         fun resetClearsState() {
-            val viewModel = MainViewModel(appModule, testScope)
+            val viewModel = createViewModel()
 
             // Set various state values
             viewModel.onUrlChanged("https://www.youtube.com/watch?v=dQw4w9WgXcQ")

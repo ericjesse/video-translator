@@ -1,21 +1,44 @@
 package com.ericjesse.videotranslator.ui.screens.progress
 
-import com.ericjesse.videotranslator.di.AppModule
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.domain.pipeline.*
-import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.OutputOptions
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.TranslationResult
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.pipeline.PipelineOrchestrator
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStage
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStageName
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
-import io.mockk.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.test.*
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import java.time.LocalTime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
-import java.time.LocalTime
 
 /**
  * Tests for ProgressScreen state management via ProgressViewModel and state models.
@@ -30,9 +53,7 @@ import java.time.LocalTime
 @DisplayName("ProgressScreen Tests")
 class ProgressScreenTest {
 
-    private lateinit var appModule: AppModule
     private lateinit var pipelineOrchestrator: PipelineOrchestrator
-    private lateinit var configManager: ConfigManager
     private lateinit var i18nManager: I18nManager
     private lateinit var testDispatcher: TestDispatcher
     private lateinit var testScope: TestScope
@@ -60,14 +81,9 @@ class ProgressScreenTest {
         testScope = TestScope(testDispatcher)
         Dispatchers.setMain(testDispatcher)
 
-        appModule = mockk(relaxed = true)
         pipelineOrchestrator = mockk(relaxed = true)
-        configManager = mockk(relaxed = true)
         i18nManager = mockk(relaxed = true)
 
-        every { appModule.pipelineOrchestrator } returns pipelineOrchestrator
-        every { appModule.configManager } returns configManager
-        every { appModule.i18nManager } returns i18nManager
         every { i18nManager[any()] } returns "Test String"
         every { pipelineOrchestrator.getLogEvents() } returns emptyList()
     }
@@ -76,6 +92,18 @@ class ProgressScreenTest {
     fun tearDown() {
         Dispatchers.resetMain()
         clearAllMocks()
+    }
+
+    /**
+     * Helper to create a ProgressViewModel with mocked dependencies.
+     */
+    private fun createViewModel(job: TranslationJob = testJob): ProgressViewModel {
+        return ProgressViewModel(
+            job = job,
+            scope = testScope,
+            i18n = i18nManager,
+            pipelineOrchestrator = pipelineOrchestrator
+        )
     }
 
     @Nested
@@ -338,7 +366,7 @@ class ProgressScreenTest {
         @Test
         @DisplayName("ViewModel should create initial state with stages")
         fun viewModelCreatesInitialState() {
-            val viewModel = ProgressViewModel(appModule, testJob, testScope)
+            val viewModel = createViewModel(testJob)
 
             assertNotNull(viewModel.state)
             assertEquals(testVideoInfo, viewModel.state.videoInfo)
@@ -349,7 +377,7 @@ class ProgressScreenTest {
         @Test
         @DisplayName("Initial state should have all stages in Pending status")
         fun initialStagesArePending() {
-            val viewModel = ProgressViewModel(appModule, testJob, testScope)
+            val viewModel = createViewModel(testJob)
 
             viewModel.state.stages.forEach { stage ->
                 assertEquals(StageStatus.Pending, stage.status)
@@ -359,7 +387,7 @@ class ProgressScreenTest {
         @Test
         @DisplayName("ViewModel should log job creation")
         fun viewModelLogsCreation() {
-            val viewModel = ProgressViewModel(appModule, testJob, testScope)
+            val viewModel = createViewModel(testJob)
 
             assertTrue(viewModel.state.logEntries.isNotEmpty())
             assertTrue(viewModel.state.logEntries.any {
@@ -378,7 +406,7 @@ class ProgressScreenTest {
             val emptyFlow = emptyFlow<PipelineStage>()
             coEvery { pipelineOrchestrator.execute(any()) } returns emptyFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -395,7 +423,7 @@ class ProgressScreenTest {
             )
             coEvery { pipelineOrchestrator.execute(any()) } returns stageFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -420,7 +448,7 @@ class ProgressScreenTest {
             )
             coEvery { pipelineOrchestrator.execute(any()) } returns stageFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -437,7 +465,7 @@ class ProgressScreenTest {
             )
             coEvery { pipelineOrchestrator.execute(any()) } returns stageFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -459,7 +487,7 @@ class ProgressScreenTest {
             }
             coEvery { pipelineOrchestrator.execute(any()) } returns infiniteFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
 
             // Allow the job to start
@@ -480,7 +508,7 @@ class ProgressScreenTest {
             }
             coEvery { pipelineOrchestrator.execute(any()) } returns infiniteFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceTimeBy(100)
 
@@ -503,7 +531,7 @@ class ProgressScreenTest {
             val stageFlow = flowOf(PipelineStage.Complete(result))
             coEvery { pipelineOrchestrator.execute(any()) } returns stageFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -531,7 +559,7 @@ class ProgressScreenTest {
             )
             coEvery { pipelineOrchestrator.execute(any()) } returns errorFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -560,7 +588,7 @@ class ProgressScreenTest {
         @Test
         @DisplayName("Overall progress should be 0 when all stages are Pending")
         fun progressZeroWhenAllPending() {
-            val viewModel = ProgressViewModel(appModule, testJob, testScope)
+            val viewModel = createViewModel(testJob)
             assertEquals(0f, viewModel.state.overallProgress)
         }
 
@@ -575,7 +603,7 @@ class ProgressScreenTest {
             val stageFlow = flowOf(PipelineStage.Complete(result))
             coEvery { pipelineOrchestrator.execute(any()) } returns stageFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceUntilIdle()
 
@@ -590,7 +618,7 @@ class ProgressScreenTest {
         @Test
         @DisplayName("Logs should be collected chronologically")
         fun logsCollectedChronologically() {
-            val viewModel = ProgressViewModel(appModule, testJob, testScope)
+            val viewModel = createViewModel(testJob)
 
             // Initial log should be present
             assertTrue(viewModel.state.logEntries.isNotEmpty())
@@ -616,7 +644,7 @@ class ProgressScreenTest {
             )
             coEvery { pipelineOrchestrator.execute(any()) } returns stageFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             val initialLogCount = viewModel.state.logEntries.size
 
             viewModel.startTranslation()
@@ -638,7 +666,7 @@ class ProgressScreenTest {
             }
             coEvery { pipelineOrchestrator.execute(any()) } returns infiniteFlow
 
-            val viewModel = ProgressViewModel(appModule, testJob, this)
+            val viewModel = createViewModel(testJob)
             viewModel.startTranslation()
             advanceTimeBy(100)
 

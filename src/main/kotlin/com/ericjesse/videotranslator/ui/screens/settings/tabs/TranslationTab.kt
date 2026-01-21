@@ -2,18 +2,51 @@
 
 package com.ericjesse.videotranslator.ui.screens.settings.tabs
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,7 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.di.AppModule
+import com.ericjesse.videotranslator.domain.model.TranslationService
 import com.ericjesse.videotranslator.infrastructure.config.AppSettings
 import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
 import com.ericjesse.videotranslator.ui.components.AppButton
@@ -33,11 +66,12 @@ import com.ericjesse.videotranslator.ui.components.ButtonSize
 import com.ericjesse.videotranslator.ui.components.ButtonStyle
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
 import com.ericjesse.videotranslator.ui.theme.AppColors
-import io.ktor.client.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.http.*
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
 
 /**
  * Available translation services.
@@ -105,14 +139,16 @@ sealed class ConnectionTestResult {
  */
 @Composable
 fun TranslationTabContent(
-    appModule: AppModule,
     settings: AppSettings,
     serviceConfig: TranslationServiceConfig,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onUpdateServiceConfig: ((TranslationServiceConfig) -> TranslationServiceConfig) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val i18n = appModule.i18nManager
+    val i18n: I18nManager = koinInject()
+    val httpClient: HttpClient = koinInject()
+    val libreTranslateService: com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService =
+        koinInject()
     val scope = rememberCoroutineScope()
 
     // Connection test state
@@ -120,7 +156,7 @@ fun TranslationTabContent(
     var deeplTestResult by remember { mutableStateOf<ConnectionTestResult>(ConnectionTestResult.Idle) }
     var openaiTestResult by remember { mutableStateOf<ConnectionTestResult>(ConnectionTestResult.Idle) }
 
-    val activeService = TranslationServiceOption.fromId(settings.translation.defaultService)
+    val activeService = TranslationServiceOption.fromId(settings.translation.defaultService.toConfigString())
         ?: TranslationServiceOption.LIBRE_TRANSLATE
 
     Column(
@@ -133,7 +169,12 @@ fun TranslationTabContent(
             selectedService = activeService,
             onServiceSelected = { service ->
                 onUpdateSettings {
-                    it.copy(translation = it.translation.copy(defaultService = service.id))
+                    it.copy(
+                        translation = it.translation.copy(
+                            defaultService = TranslationService.fromString(service.id)
+                                ?: TranslationService.LIBRE_TRANSLATE
+                        )
+                    )
                 }
             }
         )
@@ -151,8 +192,8 @@ fun TranslationTabContent(
                     scope.launch {
                         libreTranslateTestResult = ConnectionTestResult.Testing
                         libreTranslateTestResult = testLibreTranslateConnection(
-                            appModule.httpClient,
-                            appModule.libreTranslateService.serverUrl
+                            httpClient,
+                            libreTranslateService.serverUrl
                         )
                     }
                 }
@@ -178,7 +219,7 @@ fun TranslationTabContent(
                 scope.launch {
                     deeplTestResult = ConnectionTestResult.Testing
                     deeplTestResult = testDeepLConnection(
-                        appModule.httpClient,
+                        httpClient,
                         serviceConfig.deeplApiKey ?: ""
                     )
                 }
@@ -187,7 +228,7 @@ fun TranslationTabContent(
                 scope.launch {
                     openaiTestResult = ConnectionTestResult.Testing
                     openaiTestResult = testOpenAIConnection(
-                        appModule.httpClient,
+                        httpClient,
                         serviceConfig.openaiApiKey ?: ""
                     )
                 }

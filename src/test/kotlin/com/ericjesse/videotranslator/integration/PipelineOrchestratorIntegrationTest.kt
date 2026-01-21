@@ -1,17 +1,46 @@
 package com.ericjesse.videotranslator.integration
 
-import com.ericjesse.videotranslator.domain.model.*
-import com.ericjesse.videotranslator.domain.pipeline.*
-import com.ericjesse.videotranslator.domain.service.*
-import io.mockk.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.test.runTest
-import org.junit.jupiter.api.*
-import org.junit.jupiter.api.Assertions.*
-import org.junit.jupiter.api.io.TempDir
-import java.io.File
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.OutputOptions
+import com.ericjesse.videotranslator.domain.model.SubtitleEntry
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.TranslationResult
+import com.ericjesse.videotranslator.domain.model.VideoInfo
+import com.ericjesse.videotranslator.domain.model.YtDlpErrorType
+import com.ericjesse.videotranslator.domain.model.YtDlpException
+import com.ericjesse.videotranslator.domain.pipeline.CheckpointManager
+import com.ericjesse.videotranslator.domain.pipeline.PipelineCheckpoint
+import com.ericjesse.videotranslator.domain.pipeline.PipelineLogEvent
+import com.ericjesse.videotranslator.domain.pipeline.PipelineOrchestrator
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStage
+import com.ericjesse.videotranslator.domain.pipeline.PipelineStageName
+import com.ericjesse.videotranslator.domain.pipeline.StageProgress
+import com.ericjesse.videotranslator.infrastructure.service.ffmpeg.SubtitleRenderer
+import com.ericjesse.videotranslator.infrastructure.service.translation.TranslatorService
+import com.ericjesse.videotranslator.infrastructure.service.whisper.TranscriberService
+import com.ericjesse.videotranslator.infrastructure.service.ytdlp.VideoDownloader
+import io.mockk.clearAllMocks
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
 import java.nio.file.Path
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 
 /**
  * Integration tests for the PipelineOrchestrator.
@@ -71,12 +100,13 @@ class PipelineOrchestratorIntegrationTest {
 
         // Create orchestrator with minimal dependencies (uses defaults internally)
         val checkpointDir = tempDir.resolve("checkpoints").toFile().apply { mkdirs() }
+        val checkpointManager = CheckpointManager(checkpointDir)
         orchestrator = PipelineOrchestrator(
             videoDownloader = videoDownloader,
             transcriberService = transcriberService,
             translatorService = translatorService,
             subtitleRenderer = subtitleRenderer,
-            checkpointDir = checkpointDir
+            checkpointManager = checkpointManager
         )
     }
 

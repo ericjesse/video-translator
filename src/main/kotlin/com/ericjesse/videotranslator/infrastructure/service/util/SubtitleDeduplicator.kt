@@ -1,4 +1,4 @@
-package com.ericjesse.videotranslator.domain.service
+package com.ericjesse.videotranslator.infrastructure.service.util
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 
@@ -26,7 +26,7 @@ class SubtitleDeduplicator {
     data class TimedText(
         val startTime: Long,
         val endTime: Long,
-        val text: String
+        val text: String,
     ) {
         val duration: Long get() = endTime - startTime
     }
@@ -37,7 +37,7 @@ class SubtitleDeduplicator {
     data class DeduplicationResult<T>(
         val entries: List<T>,
         val originalCount: Int,
-        val removedCount: Int
+        val removedCount: Int,
     )
 
     /**
@@ -53,7 +53,7 @@ class SubtitleDeduplicator {
         entries: List<T>,
         toTimedText: (T) -> TimedText,
         updateText: (T, String) -> T,
-        reindex: (T, Int) -> T
+        reindex: (T, Int) -> T,
     ): DeduplicationResult<T> {
         if (entries.size < 2) {
             return DeduplicationResult(entries, entries.size, 0)
@@ -183,7 +183,7 @@ class SubtitleDeduplicator {
     private fun <T> mergeNearDuplicates(
         entries: List<T>,
         toTimedText: (T) -> TimedText,
-        updateText: (T, String) -> T
+        updateText: (T, String) -> T,
     ): List<T> {
         if (entries.size < 2) return entries
 

@@ -1,14 +1,30 @@
-package com.ericjesse.videotranslator.domain.service
+package com.ericjesse.videotranslator.infrastructure.service.ffmpeg
 
-import com.ericjesse.videotranslator.domain.model.*
+import com.ericjesse.videotranslator.domain.model.AssGenerator
+import com.ericjesse.videotranslator.domain.model.AudioCodec
+import com.ericjesse.videotranslator.domain.model.FfmpegProgressParser
+import com.ericjesse.videotranslator.domain.model.FontWeight
+import com.ericjesse.videotranslator.domain.model.HardwareEncoder
+import com.ericjesse.videotranslator.domain.model.HardwareEncoderDetector
+import com.ericjesse.videotranslator.domain.model.OutputFormat
+import com.ericjesse.videotranslator.domain.model.OutputOptions
+import com.ericjesse.videotranslator.domain.model.Platform
+import com.ericjesse.videotranslator.domain.model.RenderOptions
+import com.ericjesse.videotranslator.domain.model.RenderProgress
+import com.ericjesse.videotranslator.domain.model.RenderStage
+import com.ericjesse.videotranslator.domain.model.SubtitleStyle
+import com.ericjesse.videotranslator.domain.model.SubtitleType
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.TranslationResult
+import com.ericjesse.videotranslator.domain.model.VideoInfo
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 
 private val logger = KotlinLogging.logger {}
 
@@ -28,8 +44,8 @@ private val logger = KotlinLogging.logger {}
 class SubtitleRenderer(
     private val processExecutor: ProcessExecutor,
     private val platformPaths: PlatformPaths,
-    private val configManager: ConfigManager
-) {
+    private val configManager: ConfigManager,
+) : com.ericjesse.videotranslator.domain.service.api.RenderingService {
 
     private var lastResult: TranslationResult? = null
 
@@ -42,20 +58,24 @@ class SubtitleRenderer(
     /**
      * Renders subtitles into the video with full styling and encoding options.
      */
-    fun render(
+    override fun render(
         videoPath: String,
         subtitles: Subtitles,
         outputOptions: OutputOptions,
-        videoInfo: VideoInfo
+        videoInfo: VideoInfo,
     ): Flow<StageProgress> = channelFlow {
         val renderOptions = outputOptions.renderOptions ?: RenderOptions()
 
-        send(StageProgress(0f, RenderProgress(
-            percentage = 0f,
-            currentTime = 0,
-            totalTime = videoInfo.duration,
-            stage = RenderStage.PREPARING
-        ).message))
+        send(
+            StageProgress(
+                0f, RenderProgress(
+                    percentage = 0f,
+                    currentTime = 0,
+                    totalTime = videoInfo.duration,
+                    stage = RenderStage.PREPARING
+                ).message
+            )
+        )
 
         // Generate output filename
         val sanitizedTitle = sanitizeFilename(videoInfo.title)
@@ -71,12 +91,16 @@ class SubtitleRenderer(
         // Ensure output directory exists
         File(outputOptions.outputDirectory).mkdirs()
 
-        send(StageProgress(0.05f, RenderProgress(
-            percentage = 0.05f,
-            currentTime = 0,
-            totalTime = videoInfo.duration,
-            stage = RenderStage.GENERATING_SUBTITLES
-        ).message))
+        send(
+            StageProgress(
+                0.05f, RenderProgress(
+                    percentage = 0.05f,
+                    currentTime = 0,
+                    totalTime = videoInfo.duration,
+                    stage = RenderStage.GENERATING_SUBTITLES
+                ).message
+            )
+        )
 
         // Generate subtitle file (ASS or SRT)
         val subtitleFile: File
@@ -90,12 +114,16 @@ class SubtitleRenderer(
             writeSrtFile(subtitles, subtitleFile)
         }
 
-        send(StageProgress(0.1f, RenderProgress(
-            percentage = 0.1f,
-            currentTime = 0,
-            totalTime = videoInfo.duration,
-            stage = RenderStage.ENCODING
-        ).message))
+        send(
+            StageProgress(
+                0.1f, RenderProgress(
+                    percentage = 0.1f,
+                    currentTime = 0,
+                    totalTime = videoInfo.duration,
+                    stage = RenderStage.ENCODING
+                ).message
+            )
+        )
 
         // Render video
         when (outputOptions.subtitleType) {
@@ -104,6 +132,7 @@ class SubtitleRenderer(
                     send(StageProgress(0.1f + progress.percentage * 0.85f, progress.message))
                 }
             }
+
             SubtitleType.BURNED_IN -> {
                 renderBurnedInSubtitles(
                     videoPath,
@@ -118,12 +147,16 @@ class SubtitleRenderer(
             }
         }
 
-        send(StageProgress(0.95f, RenderProgress(
-            percentage = 0.95f,
-            currentTime = videoInfo.duration,
-            totalTime = videoInfo.duration,
-            stage = RenderStage.FINALIZING
-        ).message))
+        send(
+            StageProgress(
+                0.95f, RenderProgress(
+                    percentage = 0.95f,
+                    currentTime = videoInfo.duration,
+                    totalTime = videoInfo.duration,
+                    stage = RenderStage.FINALIZING
+                ).message
+            )
+        )
 
         // Handle subtitle export option
         val exportedSubtitlePath = if (outputOptions.exportSrt) {
@@ -162,25 +195,29 @@ class SubtitleRenderer(
             duration = 0 // Will be set by orchestrator
         )
 
-        send(StageProgress(1f, RenderProgress(
-            percentage = 1f,
-            currentTime = videoInfo.duration,
-            totalTime = videoInfo.duration,
-            stage = RenderStage.COMPLETE
-        ).message))
+        send(
+            StageProgress(
+                1f, RenderProgress(
+                    percentage = 1f,
+                    currentTime = videoInfo.duration,
+                    totalTime = videoInfo.duration,
+                    stage = RenderStage.COMPLETE
+                ).message
+            )
+        )
     }
 
     /**
      * Returns the result of the last render.
      */
-    fun getRenderResult(): TranslationResult {
+    override fun getRenderResult(): TranslationResult {
         return lastResult ?: throw IllegalStateException("No render result available")
     }
 
     /**
      * Checks if a hardware encoder is available on this system.
      */
-    suspend fun isEncoderAvailable(encoder: HardwareEncoder): Boolean {
+    override suspend fun isEncoderAvailable(encoder: HardwareEncoder): Boolean {
         if (encoder == HardwareEncoder.NONE) return true
 
         // Check platform compatibility
@@ -194,7 +231,8 @@ class SubtitleRenderer(
             var success = true
             processExecutor.execute(testCommand) { line ->
                 if (line.contains("Cannot open") || line.contains("No device") ||
-                    line.contains("Error") || line.contains("not found")) {
+                    line.contains("Error") || line.contains("not found")
+                ) {
                     success = false
                 }
             }
@@ -208,7 +246,7 @@ class SubtitleRenderer(
     /**
      * Gets list of available hardware encoders for this system.
      */
-    suspend fun getAvailableEncoders(): List<HardwareEncoder> {
+    override suspend fun getAvailableEncoders(): List<HardwareEncoder> {
         val available = mutableListOf(HardwareEncoder.NONE) // Software always available
 
         for (encoder in HardwareEncoder.availableForPlatform(Platform.current())) {
@@ -228,7 +266,7 @@ class SubtitleRenderer(
         subtitlePath: String,
         outputPath: String,
         totalDuration: Long,
-        onProgress: suspend (RenderProgress) -> Unit
+        onProgress: suspend (RenderProgress) -> Unit,
     ) {
         val subtitleCodec = if (subtitlePath.endsWith(".ass")) "ass" else "srt"
 
@@ -260,7 +298,7 @@ class SubtitleRenderer(
         options: RenderOptions,
         isAssFormat: Boolean,
         totalDuration: Long,
-        onProgress: suspend (RenderProgress) -> Unit
+        onProgress: suspend (RenderProgress) -> Unit,
     ) {
         val command = buildBurnedInCommand(
             videoPath,
@@ -286,7 +324,7 @@ class SubtitleRenderer(
         subtitlePath: String,
         outputPath: String,
         options: RenderOptions,
-        isAssFormat: Boolean
+        isAssFormat: Boolean,
     ): List<String> {
         val command = mutableListOf<String>()
 
@@ -361,7 +399,7 @@ class SubtitleRenderer(
     private fun buildSubtitleFilter(
         subtitlePath: String,
         style: SubtitleStyle,
-        isAssFormat: Boolean
+        isAssFormat: Boolean,
     ): String {
         // Escape path for FFmpeg filter syntax (not shell syntax!)
         // FFmpeg filter special chars that need escaping: \ ' : [ ] # ;
@@ -429,7 +467,7 @@ class SubtitleRenderer(
     private suspend fun executeWithProgress(
         command: List<String>,
         totalDuration: Long,
-        onProgress: suspend (RenderProgress) -> Unit
+        onProgress: suspend (RenderProgress) -> Unit,
     ) {
         var currentProgress = RenderProgress(
             percentage = 0f,
@@ -454,7 +492,7 @@ class SubtitleRenderer(
         subtitles: Subtitles,
         file: File,
         style: SubtitleStyle,
-        videoInfo: VideoInfo
+        videoInfo: VideoInfo,
     ) {
         val width = videoInfo.width ?: 1920
         val height = videoInfo.height ?: 1080
@@ -506,7 +544,7 @@ class SubtitleRenderer(
     /**
      * Gets video bitrate for original quality encoding.
      */
-    suspend fun getVideoBitrate(videoPath: String): Int? {
+    override suspend fun getVideoBitrate(videoPath: String): Int? {
         val command = listOf(
             ffprobePath,
             "-v", "error",

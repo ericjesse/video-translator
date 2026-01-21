@@ -1,22 +1,44 @@
-package com.ericjesse.videotranslator.domain.service
+package com.ericjesse.videotranslator.infrastructure.service.translation
 
-import com.ericjesse.videotranslator.domain.model.*
+import com.ericjesse.videotranslator.domain.model.BatchConfig
+import com.ericjesse.videotranslator.domain.model.FormattingPreserver
+import com.ericjesse.videotranslator.domain.model.Glossary
+import com.ericjesse.videotranslator.domain.model.Language
+import com.ericjesse.videotranslator.domain.model.RateLimitTracker
+import com.ericjesse.videotranslator.domain.model.Subtitles
+import com.ericjesse.videotranslator.domain.model.TranslatedContext
+import com.ericjesse.videotranslator.domain.model.TranslationApiResult
+import com.ericjesse.videotranslator.domain.model.TranslationBatch
+import com.ericjesse.videotranslator.domain.model.TranslationCache
+import com.ericjesse.videotranslator.domain.model.TranslationException
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.domain.model.TranslationStats
 import com.ericjesse.videotranslator.domain.pipeline.StageProgress
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.TranslationServiceConfig
 import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
 import com.ericjesse.videotranslator.infrastructure.translation.ServerStatus
-import io.ktor.client.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.http.*
+import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.*
-import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 
 private val logger = KotlinLogging.logger {}
 
@@ -37,8 +59,8 @@ private val logger = KotlinLogging.logger {}
 class TranslatorService(
     private val httpClient: HttpClient,
     private val configManager: ConfigManager,
-    private val libreTranslateService: LibreTranslateService? = null
-) {
+    private val libreTranslateService: LibreTranslateService? = null,
+) : com.ericjesse.videotranslator.domain.service.api.TranslationServiceApi {
 
     private var lastResult: Subtitles? = null
     private var lastStats: TranslationStats? = null
@@ -55,7 +77,7 @@ class TranslatorService(
     /**
      * Sets the glossary to use for translations.
      */
-    fun setGlossary(glossary: Glossary?) {
+    override fun setGlossary(glossary: Glossary?) {
         activeGlossary = glossary
     }
 
@@ -67,7 +89,7 @@ class TranslatorService(
     /**
      * Clears the translation cache.
      */
-    fun clearCache() {
+    override fun clearCache() {
         cache.clear()
     }
 
@@ -88,20 +110,19 @@ class TranslatorService(
      * @param targetLanguage Target language for translation.
      * @return Flow of progress updates during translation.
      */
-    fun translate(subtitles: Subtitles, targetLanguage: Language): Flow<StageProgress> = flow {
+    override fun translate(subtitles: Subtitles, targetLanguage: Language): Flow<StageProgress> = flow {
         emit(StageProgress(0f, "Starting translation..."))
 
         val startTime = System.currentTimeMillis()
         val settings = configManager.getSettings()
         val serviceConfig = configManager.getTranslationServiceConfig()
 
-        val primaryService = TranslationService.fromString(settings.translation.defaultService)
-            ?: TranslationService.LIBRE_TRANSLATE
+        val primaryService = settings.translation.defaultService
 
         // Start local LibreTranslate server if needed
         if (primaryService == TranslationService.LIBRE_TRANSLATE && libreTranslateService != null) {
             emit(StageProgress(0f, "Starting local translation server..."))
-            val serverStarted = ensureLocalLibreTranslateRunning()
+            val serverStarted = ensureLocalServiceRunning()
             if (!serverStarted) {
                 logger.warn { "Local LibreTranslate server failed to start, will try configured URL" }
             }
@@ -153,7 +174,8 @@ class TranslatorService(
         val glossaryReplacements = mutableListOf<Map<String, String>>()
         val glossaryProcessedTexts = if (activeGlossary != null &&
             activeGlossary?.sourceLanguage == sourceLanguage &&
-            activeGlossary?.targetLanguage == targetLanguage.code) {
+            activeGlossary?.targetLanguage == targetLanguage.code
+        ) {
             preparedTexts.map { text ->
                 val (processed, replacements) = activeGlossary!!.applyPreTranslation(text)
                 glossaryReplacements.add(replacements)
@@ -221,10 +243,12 @@ class TranslatorService(
                             val delayMs = tracker.recordFailure(result.retryAfterSeconds)
                             logger.warn { "$currentService rate limited, waiting ${delayMs}ms" }
 
-                            emit(StageProgress(
-                                percentage = batchIndex.toFloat() / batches.size,
-                                message = "Rate limited, waiting ${delayMs / 1000}s..."
-                            ))
+                            emit(
+                                StageProgress(
+                                    percentage = batchIndex.toFloat() / batches.size,
+                                    message = "Rate limited, waiting ${delayMs / 1000}s..."
+                                )
+                            )
 
                             delay(delayMs)
                             // Retry same service
@@ -321,7 +345,7 @@ class TranslatorService(
     /**
      * Returns the result of the last translation.
      */
-    fun getTranslationResult(): Subtitles {
+    override fun getTranslationResult(): Subtitles {
         return lastResult ?: throw IllegalStateException("No translation result available")
     }
 
@@ -346,13 +370,15 @@ class TranslatorService(
 
             if (currentBatch.isNotEmpty() && (wouldExceedChars || wouldExceedSegments || wouldExceedTokens)) {
                 // Finalize current batch
-                batches.add(TranslationBatch(
-                    segments = currentBatch.toList(),
-                    contextPrefix = previousContext.takeLast(config.contextSegments),
-                    startIndex = startIndex,
-                    totalCharacters = currentChars,
-                    estimatedTokens = currentTokens
-                ))
+                batches.add(
+                    TranslationBatch(
+                        segments = currentBatch.toList(),
+                        contextPrefix = previousContext.takeLast(config.contextSegments),
+                        startIndex = startIndex,
+                        totalCharacters = currentChars,
+                        estimatedTokens = currentTokens
+                    )
+                )
 
                 startIndex = index
                 currentBatch = mutableListOf()
@@ -367,13 +393,15 @@ class TranslatorService(
 
         // Add final batch
         if (currentBatch.isNotEmpty()) {
-            batches.add(TranslationBatch(
-                segments = currentBatch.toList(),
-                contextPrefix = previousContext.takeLast(config.contextSegments),
-                startIndex = startIndex,
-                totalCharacters = currentChars,
-                estimatedTokens = currentTokens
-            ))
+            batches.add(
+                TranslationBatch(
+                    segments = currentBatch.toList(),
+                    contextPrefix = previousContext.takeLast(config.contextSegments),
+                    startIndex = startIndex,
+                    totalCharacters = currentChars,
+                    estimatedTokens = currentTokens
+                )
+            )
         }
 
         return batches
@@ -390,18 +418,21 @@ class TranslatorService(
                 maxTokens = Int.MAX_VALUE,
                 contextSegments = 0 // LibreTranslate doesn't support context
             )
+
             TranslationService.DEEPL -> BatchConfig(
                 maxCharacters = 50000,
                 maxSegments = 50, // DeepL limit
                 maxTokens = Int.MAX_VALUE,
                 contextSegments = 2
             )
+
             TranslationService.OPENAI -> BatchConfig(
                 maxCharacters = 10000,
                 maxSegments = 50,
                 maxTokens = 3000, // Leave room for response
                 contextSegments = 3
             )
+
             TranslationService.GOOGLE -> BatchConfig(
                 maxCharacters = 5000,
                 maxSegments = 128,
@@ -423,7 +454,7 @@ class TranslatorService(
      */
     private fun buildFallbackOrder(
         primary: TranslationService,
-        config: TranslationServiceConfig
+        config: TranslationServiceConfig,
     ): List<TranslationService> {
         val order = mutableListOf(primary)
 
@@ -464,7 +495,8 @@ class TranslatorService(
 
         // Use local LibreTranslate server
         if (libreTranslateService != null &&
-            libreTranslateService.status.value == ServerStatus.RUNNING) {
+            libreTranslateService.status.value == ServerStatus.RUNNING
+        ) {
             backends[TranslationService.LIBRE_TRANSLATE] = LibreTranslateBackend(
                 httpClient,
                 libreTranslateService.serverUrl,
@@ -488,7 +520,7 @@ class TranslatorService(
      * Ensures the local LibreTranslate server is running.
      * Call this before translation if using the local server.
      */
-    suspend fun ensureLocalLibreTranslateRunning(): Boolean {
+    override suspend fun ensureLocalServiceRunning(): Boolean {
         if (libreTranslateService == null) {
             return false
         }
@@ -499,6 +531,7 @@ class TranslatorService(
                 logger.info { "Starting local LibreTranslate server..." }
                 libreTranslateService.start()
             }
+
             ServerStatus.STARTING -> {
                 // Wait for startup
                 var attempts = 0
@@ -508,6 +541,7 @@ class TranslatorService(
                 }
                 libreTranslateService.status.value == ServerStatus.RUNNING
             }
+
             ServerStatus.STOPPING -> {
                 // Wait for stop, then start
                 while (libreTranslateService.status.value == ServerStatus.STOPPING) {
@@ -529,7 +563,7 @@ interface TranslationBackend {
     suspend fun translateBatch(
         batch: TranslationBatch,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
     ): TranslationApiResult
 }
 
@@ -540,7 +574,7 @@ interface TranslationBackend {
 class LibreTranslateBackend(
     private val httpClient: HttpClient,
     private val serverUrl: String,
-    private val json: Json
+    private val json: Json,
 ) : TranslationBackend {
 
     @Serializable
@@ -548,23 +582,23 @@ class LibreTranslateBackend(
         val q: String,
         val source: String,
         val target: String,
-        val format: String = "text"
+        val format: String = "text",
     )
 
     @Serializable
     private data class TranslateResponse(
-        val translatedText: String
+        val translatedText: String,
     )
 
     @Serializable
     private data class ErrorResponse(
-        val error: String? = null
+        val error: String? = null,
     )
 
     @Serializable
     private data class LanguageInfo(
         val code: String,
-        val name: String
+        val name: String,
     )
 
     // Cache available languages to avoid repeated API calls
@@ -593,7 +627,7 @@ class LibreTranslateBackend(
     override suspend fun translateBatch(
         batch: TranslationBatch,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
     ): TranslationApiResult {
         // Validate languages are supported
         val available = fetchAvailableLanguages()
@@ -622,13 +656,16 @@ class LibreTranslateBackend(
             try {
                 val response = httpClient.post("$serverUrl/translate") {
                     contentType(ContentType.Application.Json)
-                    setBody(json.encodeToString(TranslateRequest.serializer(),
-                        TranslateRequest(
-                            q = text,
-                            source = sourceLanguage,
-                            target = targetLanguage
+                    setBody(
+                        json.encodeToString(
+                            TranslateRequest.serializer(),
+                            TranslateRequest(
+                                q = text,
+                                source = sourceLanguage,
+                                target = targetLanguage
+                            )
                         )
-                    ))
+                    )
                 }
 
                 when (response.status) {
@@ -636,14 +673,18 @@ class LibreTranslateBackend(
                         val result = json.decodeFromString<TranslateResponse>(response.bodyAsText())
                         translations.add(result.translatedText)
                     }
+
                     HttpStatusCode.TooManyRequests -> {
                         val retryAfter = response.headers["Retry-After"]?.toIntOrNull()
                         return TranslationApiResult.RateLimited(retryAfter ?: 30)
                     }
+
                     else -> {
                         val errorBody = try {
                             json.decodeFromString<ErrorResponse>(response.bodyAsText())
-                        } catch (e: Exception) { null }
+                        } catch (e: Exception) {
+                            null
+                        }
 
                         return TranslationApiResult.ServiceError(
                             message = errorBody?.error ?: "HTTP ${response.status.value}",
@@ -671,12 +712,12 @@ class LibreTranslateBackend(
 class DeepLBackend(
     private val httpClient: HttpClient,
     private val config: TranslationServiceConfig,
-    private val json: Json
+    private val json: Json,
 ) : TranslationBackend {
 
     @Serializable
     private data class DeepLResponse(
-        val translations: List<Translation>
+        val translations: List<Translation>,
     ) {
         @Serializable
         data class Translation(val text: String)
@@ -685,7 +726,7 @@ class DeepLBackend(
     override suspend fun translateBatch(
         batch: TranslationBatch,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
     ): TranslationApiResult {
         val apiKey = config.deeplApiKey ?: return TranslationApiResult.ConfigurationError(
             "DeepL API key not configured"
@@ -725,18 +766,22 @@ class DeepLBackend(
                     val result = json.decodeFromString<DeepLResponse>(response.bodyAsText())
                     TranslationApiResult.Success(result.translations.map { it.text })
                 }
+
                 HttpStatusCode.TooManyRequests -> {
                     TranslationApiResult.RateLimited(60)
                 }
+
                 HttpStatusCode.Forbidden -> {
                     TranslationApiResult.ConfigurationError("DeepL API key is invalid")
                 }
+
                 HttpStatusCode.PayloadTooLarge -> {
                     TranslationApiResult.ServiceError(
                         message = "Request too large for DeepL",
                         isRetryable = false
                     )
                 }
+
                 else -> {
                     TranslationApiResult.ServiceError(
                         message = "DeepL error: HTTP ${response.status.value}",
@@ -775,7 +820,7 @@ class DeepLBackend(
 class OpenAIBackend(
     private val httpClient: HttpClient,
     private val config: TranslationServiceConfig,
-    private val json: Json
+    private val json: Json,
 ) : TranslationBackend {
 
     @Serializable
@@ -784,7 +829,7 @@ class OpenAIBackend(
         val messages: List<Message>,
         val temperature: Double = 0.3,
         @SerialName("response_format")
-        val responseFormat: ResponseFormat? = null
+        val responseFormat: ResponseFormat? = null,
     ) {
         @Serializable
         data class Message(val role: String, val content: String)
@@ -796,7 +841,7 @@ class OpenAIBackend(
     @Serializable
     private data class ChatResponse(
         val choices: List<Choice>? = null,
-        val error: ErrorInfo? = null
+        val error: ErrorInfo? = null,
     ) {
         @Serializable
         data class Choice(val message: Message)
@@ -808,14 +853,14 @@ class OpenAIBackend(
         data class ErrorInfo(
             val message: String,
             val type: String? = null,
-            val code: String? = null
+            val code: String? = null,
         )
     }
 
     override suspend fun translateBatch(
         batch: TranslationBatch,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
     ): TranslationApiResult {
         val apiKey = config.openaiApiKey ?: return TranslationApiResult.ConfigurationError(
             "OpenAI API key not configured"
@@ -852,16 +897,19 @@ class OpenAIBackend(
             val response = httpClient.post("https://api.openai.com/v1/chat/completions") {
                 header("Authorization", "Bearer $apiKey")
                 contentType(ContentType.Application.Json)
-                setBody(json.encodeToString(ChatRequest.serializer(),
-                    ChatRequest(
-                        model = "gpt-4o-mini",
-                        messages = listOf(
-                            ChatRequest.Message("system", systemPrompt),
-                            ChatRequest.Message("user", userPrompt)
-                        ),
-                        responseFormat = ChatRequest.ResponseFormat("json_object")
+                setBody(
+                    json.encodeToString(
+                        ChatRequest.serializer(),
+                        ChatRequest(
+                            model = "gpt-4o-mini",
+                            messages = listOf(
+                                ChatRequest.Message("system", systemPrompt),
+                                ChatRequest.Message("user", userPrompt)
+                            ),
+                            responseFormat = ChatRequest.ResponseFormat("json_object")
+                        )
                     )
-                ))
+                )
             }
 
             return when (response.status) {
@@ -877,17 +925,22 @@ class OpenAIBackend(
                     val translations = parseTranslationResponse(content, batch.segments.size)
                     TranslationApiResult.Success(translations)
                 }
+
                 HttpStatusCode.TooManyRequests -> {
                     val retryAfter = response.headers["Retry-After"]?.toIntOrNull()
                     TranslationApiResult.RateLimited(retryAfter ?: 60)
                 }
+
                 HttpStatusCode.Unauthorized -> {
                     TranslationApiResult.ConfigurationError("OpenAI API key is invalid")
                 }
+
                 else -> {
                     val errorResponse = try {
                         json.decodeFromString<ChatResponse>(response.bodyAsText())
-                    } catch (e: Exception) { null }
+                    } catch (e: Exception) {
+                        null
+                    }
 
                     TranslationApiResult.ServiceError(
                         message = errorResponse?.error?.message ?: "OpenAI error: HTTP ${response.status.value}",
@@ -913,6 +966,7 @@ class OpenAIBackend(
                 jsonElement is JsonArray -> {
                     jsonElement.map { it.jsonPrimitive.content }
                 }
+
                 jsonElement is JsonObject -> {
                     // Look for common keys that might contain the array
                     val array = jsonElement["translations"]
@@ -933,6 +987,7 @@ class OpenAIBackend(
                         content.split("|||").map { it.trim() }
                     }
                 }
+
                 else -> {
                     content.split("|||").map { it.trim() }
                 }
@@ -964,7 +1019,7 @@ class OpenAIBackend(
 class GoogleBackend(
     private val httpClient: HttpClient,
     private val config: TranslationServiceConfig,
-    private val json: Json
+    private val json: Json,
 ) : TranslationBackend {
 
     @Serializable
@@ -972,13 +1027,13 @@ class GoogleBackend(
         val q: List<String>,
         val source: String,
         val target: String,
-        val format: String = "text"
+        val format: String = "text",
     )
 
     @Serializable
     private data class GoogleResponse(
         val data: Data? = null,
-        val error: ErrorInfo? = null
+        val error: ErrorInfo? = null,
     ) {
         @Serializable
         data class Data(val translations: List<Translation>)
@@ -989,14 +1044,14 @@ class GoogleBackend(
         @Serializable
         data class ErrorInfo(
             val code: Int,
-            val message: String
+            val message: String,
         )
     }
 
     override suspend fun translateBatch(
         batch: TranslationBatch,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
     ): TranslationApiResult {
         val apiKey = config.googleApiKey ?: return TranslationApiResult.ConfigurationError(
             "Google API key not configured"
@@ -1006,13 +1061,16 @@ class GoogleBackend(
             val response = httpClient.post("https://translation.googleapis.com/language/translate/v2") {
                 parameter("key", apiKey)
                 contentType(ContentType.Application.Json)
-                setBody(json.encodeToString(GoogleRequest.serializer(),
-                    GoogleRequest(
-                        q = batch.segments,
-                        source = sourceLanguage,
-                        target = targetLanguage
+                setBody(
+                    json.encodeToString(
+                        GoogleRequest.serializer(),
+                        GoogleRequest(
+                            q = batch.segments,
+                            source = sourceLanguage,
+                            target = targetLanguage
+                        )
                     )
-                ))
+                )
             }
 
             return when (response.status) {
@@ -1025,16 +1083,21 @@ class GoogleBackend(
                         )
                     TranslationApiResult.Success(translations)
                 }
+
                 HttpStatusCode.TooManyRequests -> {
                     TranslationApiResult.RateLimited(60)
                 }
+
                 HttpStatusCode.Forbidden, HttpStatusCode.Unauthorized -> {
                     TranslationApiResult.ConfigurationError("Google API key is invalid")
                 }
+
                 else -> {
                     val errorResponse = try {
                         json.decodeFromString<GoogleResponse>(response.bodyAsText())
-                    } catch (e: Exception) { null }
+                    } catch (e: Exception) {
+                        null
+                    }
 
                     TranslationApiResult.ServiceError(
                         message = errorResponse?.error?.message ?: "Google error: HTTP ${response.status.value}",

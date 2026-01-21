@@ -1,8 +1,8 @@
 package com.ericjesse.videotranslator.domain.model
 
-import kotlinx.serialization.Serializable
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.serialization.Serializable
 
 /**
  * Configuration for smart batching of translation requests.
@@ -455,6 +455,16 @@ enum class TranslationService(val displayName: String) {
     DEEPL("DeepL"),
     OPENAI("OpenAI"),
     GOOGLE("Google Translate");
+
+    /**
+     * Converts this enum to a configuration string for serialization.
+     */
+    fun toConfigString(): String = when (this) {
+        LIBRE_TRANSLATE -> "libretranslate"
+        DEEPL -> "deepl"
+        OPENAI -> "openai"
+        GOOGLE -> "google"
+    }
 
     companion object {
         fun fromString(value: String): TranslationService? {

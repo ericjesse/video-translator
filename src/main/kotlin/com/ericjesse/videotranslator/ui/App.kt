@@ -1,8 +1,16 @@
 package com.ericjesse.videotranslator.ui
 
-import androidx.compose.runtime.*
-import com.ericjesse.videotranslator.di.AppModule
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.ericjesse.videotranslator.domain.model.TranslationJob
+import com.ericjesse.videotranslator.domain.model.TranslationService
+import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
+import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
 import com.ericjesse.videotranslator.infrastructure.translation.ServerStatus
 import com.ericjesse.videotranslator.ui.error.GlobalErrorDisplay
 import com.ericjesse.videotranslator.ui.screens.main.MainScreen
@@ -12,6 +20,7 @@ import com.ericjesse.videotranslator.ui.screens.progress.ProgressViewModel
 import com.ericjesse.videotranslator.ui.screens.settings.SettingsScreen
 import com.ericjesse.videotranslator.ui.screens.setup.SetupWizard
 import io.github.oshai.kotlinlogging.KotlinLogging
+import org.koin.compose.koinInject
 
 private val logger = KotlinLogging.logger {}
 
@@ -28,10 +37,14 @@ sealed class Screen {
 /**
  * Main application composable.
  * Handles navigation between screens.
+ * Uses Koin dependency injection for services.
  */
 @Composable
-fun App(appModule: AppModule) {
-    val configManager = appModule.configManager
+fun App() {
+    // Inject dependencies using Koin
+    val configManager: ConfigManager = koinInject()
+    val libreTranslate: LibreTranslateService = koinInject()
+
     val isFirstRun = configManager.isFirstRun()
 
     var currentScreen by remember {
@@ -44,11 +57,10 @@ fun App(appModule: AppModule) {
     LaunchedEffect(currentScreen) {
         // Only start when we're on Main screen (after setup is complete)
         if (currentScreen is Screen.Main) {
-            val libreTranslate = appModule.libreTranslateService
             val settings = configManager.getSettings()
 
             // Start server if LibreTranslate is the selected service and server is not running
-            if (settings.translation.defaultService == "libretranslate" &&
+            if (settings.translation.defaultService == TranslationService.LIBRE_TRANSLATE &&
                 libreTranslate.status.value == ServerStatus.STOPPED) {
                 logger.info { "Starting LibreTranslate server on app startup..." }
                 val started = libreTranslate.start()
@@ -82,14 +94,13 @@ fun App(appModule: AppModule) {
         when (val screen = currentScreen) {
             is Screen.SetupWizard -> {
                 SetupWizard(
-                    appModule = appModule,
                     onComplete = navigateToMain
                 )
             }
 
             is Screen.Main -> {
                 // Create and remember MainViewModel
-                val mainViewModel = remember { MainViewModel(appModule) }
+                val mainViewModel = remember { MainViewModel() }
 
                 // Dispose ViewModel when leaving composition
                 DisposableEffect(Unit) {
@@ -97,7 +108,6 @@ fun App(appModule: AppModule) {
                 }
 
                 MainScreen(
-                    appModule = appModule,
                     viewModel = mainViewModel,
                     onTranslate = navigateToProgress,
                     onOpenSettings = navigateToSettings
@@ -107,7 +117,7 @@ fun App(appModule: AppModule) {
             is Screen.Progress -> {
                 // Create and remember ProgressViewModel for this job
                 val progressViewModel = remember(screen.job) {
-                    ProgressViewModel(appModule, screen.job)
+                    ProgressViewModel(screen.job)
                 }
 
                 // Dispose ViewModel when leaving composition
@@ -116,7 +126,6 @@ fun App(appModule: AppModule) {
                 }
 
                 ProgressScreen(
-                    appModule = appModule,
                     viewModel = progressViewModel,
                     onTranslateAnother = navigateToMain,
                     onOpenSettings = navigateToSettings
@@ -125,7 +134,6 @@ fun App(appModule: AppModule) {
 
             is Screen.Settings -> {
                 SettingsScreen(
-                    appModule = appModule,
                     onBack = navigateToMain
                 )
             }
