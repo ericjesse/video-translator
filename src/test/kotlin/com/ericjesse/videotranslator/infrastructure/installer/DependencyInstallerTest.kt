@@ -388,11 +388,20 @@ class DependencyInstallerTest {
 
             val descriptions = installer.getComponentDescriptions()
 
-            assertEquals(4, descriptions.size)
+            assertEquals(6, descriptions.size)
             assertNotNull(descriptions.find { it.id == ComponentId.YT_DLP })
             assertNotNull(descriptions.find { it.id == ComponentId.FFMPEG })
             assertNotNull(descriptions.find { it.id == ComponentId.WHISPER_CPP })
             assertNotNull(descriptions.find { it.id == ComponentId.WHISPER_MODEL_BASE })
+            assertNotNull(descriptions.find { it.id == ComponentId.PYTHON })
+            assertNotNull(descriptions.find { it.id == ComponentId.LIBRE_TRANSLATE })
+
+            // Verify LibreTranslate and Python are marked as optional
+            val libreTranslate = descriptions.find { it.id == ComponentId.LIBRE_TRANSLATE }
+            assertTrue(libreTranslate?.isOptional == true)
+
+            val python = descriptions.find { it.id == ComponentId.PYTHON }
+            assertTrue(python?.isOptional == true)
         }
 
         @Test
@@ -440,11 +449,24 @@ class DependencyInstallerTest {
 
             val descriptions = installer.getComponentDescriptions()
 
-            assertEquals(4, descriptions.size)
+            assertEquals(7, descriptions.size)
+            assertNotNull(descriptions.find { it.id == ComponentId.VC_REDIST })
             assertNotNull(descriptions.find { it.id == ComponentId.YT_DLP })
             assertNotNull(descriptions.find { it.id == ComponentId.FFMPEG })
             assertNotNull(descriptions.find { it.id == ComponentId.WHISPER_CPP })
             assertNotNull(descriptions.find { it.id == ComponentId.WHISPER_MODEL_BASE })
+            assertNotNull(descriptions.find { it.id == ComponentId.PYTHON })
+            assertNotNull(descriptions.find { it.id == ComponentId.LIBRE_TRANSLATE })
+
+            // Verify LibreTranslate and Python are marked as optional
+            val libreTranslate = descriptions.find { it.id == ComponentId.LIBRE_TRANSLATE }
+            assertTrue(libreTranslate?.isOptional == true)
+
+            val python = descriptions.find { it.id == ComponentId.PYTHON }
+            assertTrue(python?.isOptional == true)
+
+            // Verify VC_REDIST is first (as a prerequisite for other components)
+            assertEquals(ComponentId.VC_REDIST, descriptions.first().id)
         }
 
         @Test
@@ -492,11 +514,20 @@ class DependencyInstallerTest {
 
             val descriptions = installer.getComponentDescriptions()
 
-            assertEquals(4, descriptions.size)
+            assertEquals(6, descriptions.size)
             assertNotNull(descriptions.find { it.id == ComponentId.YT_DLP })
             assertNotNull(descriptions.find { it.id == ComponentId.FFMPEG })
             assertNotNull(descriptions.find { it.id == ComponentId.WHISPER_CPP })
             assertNotNull(descriptions.find { it.id == ComponentId.WHISPER_MODEL_BASE })
+            assertNotNull(descriptions.find { it.id == ComponentId.PYTHON })
+            assertNotNull(descriptions.find { it.id == ComponentId.LIBRE_TRANSLATE })
+
+            // Verify LibreTranslate and Python are marked as optional
+            val libreTranslate = descriptions.find { it.id == ComponentId.LIBRE_TRANSLATE }
+            assertTrue(libreTranslate?.isOptional == true)
+
+            val python = descriptions.find { it.id == ComponentId.PYTHON }
+            assertTrue(python?.isOptional == true)
         }
 
         @Test

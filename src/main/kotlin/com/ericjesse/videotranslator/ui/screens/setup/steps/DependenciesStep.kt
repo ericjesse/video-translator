@@ -2,15 +2,50 @@
 
 package com.ericjesse.videotranslator.ui.screens.setup.steps
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -18,16 +53,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ericjesse.videotranslator.domain.installer.DependencyInstaller
+import com.ericjesse.videotranslator.domain.installer.PreInstallCheckResult
 import com.ericjesse.videotranslator.ui.components.AppButton
 import com.ericjesse.videotranslator.ui.components.AppCard
 import com.ericjesse.videotranslator.ui.components.ButtonSize
 import com.ericjesse.videotranslator.ui.components.ButtonStyle
-import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
 import com.ericjesse.videotranslator.ui.i18n.I18nManager
-import com.ericjesse.videotranslator.ui.theme.AppColors
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.delay
+import org.koin.compose.koinInject
+import com.ericjesse.videotranslator.ui.components.CardElevation as AppCardElevation
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * Whisper model information with size and description.
@@ -87,8 +126,27 @@ fun DependenciesStep(
     isDownloading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val dependencyInstaller: DependencyInstaller = koinInject()
     val scrollState = rememberScrollState()
     val currentModel = WhisperModel.fromId(selectedModel)
+
+    // State for pre-installation check results
+    var preInstallCheckResults by remember { mutableStateOf<List<PreInstallCheckResult>?>(null) }
+    var isCheckingPrerequisites by remember { mutableStateOf(true) }
+
+    // Run pre-installation checks when the step is first displayed
+    LaunchedEffect(Unit) {
+        logger.info { "DependenciesStep: Starting pre-installation checks after language selection" }
+        isCheckingPrerequisites = true
+        try {
+            preInstallCheckResults = dependencyInstaller.runPreInstallationChecks()
+            logger.info { "DependenciesStep: Pre-installation checks completed" }
+        } catch (e: Exception) {
+            logger.error(e) { "DependenciesStep: Pre-installation checks failed with exception" }
+        } finally {
+            isCheckingPrerequisites = false
+        }
+    }
 
     // Component definitions
     val ytDlp = ComponentInfo(

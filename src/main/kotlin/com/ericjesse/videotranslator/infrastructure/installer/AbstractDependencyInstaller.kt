@@ -52,7 +52,7 @@ abstract class AbstractDependencyInstaller(
     protected var _installationSummary: InstallationSummary? = null
     protected val warnings: MutableList<String> = mutableListOf()
 
-    private var cancelled = false
+    protected var cancelled = false
 
     // ==================== Abstract Methods ====================
 
@@ -88,28 +88,85 @@ abstract class AbstractDependencyInstaller(
     override fun isInstalling(): Boolean = _state == InstallerState.INSTALLING
 
     override suspend fun runPreInstallationChecks(): List<PreInstallCheckResult> {
+        logger.info { "========== Starting Pre-Installation Checks ==========" }
+        logger.info { "Platform: ${System.getProperty("os.name")} ${System.getProperty("os.version")}" }
+        logger.info { "Architecture: ${System.getProperty("os.arch")}" }
+        logger.info { "Java Version: ${System.getProperty("java.version")}" }
+        logger.info { "User Home: ${System.getProperty("user.home")}" }
+        logger.info { "Data Directory: ${platformPaths.dataDir}" }
+        logger.info { "Bin Directory: ${platformPaths.binDir}" }
+
         _state = InstallerState.CHECKING
         val results = mutableListOf<PreInstallCheckResult>()
 
         // Check disk space
-        results.add(checkDiskSpace())
+        logger.info { "--- Checking Disk Space ---" }
+        val diskSpaceResult = checkDiskSpace()
+        logCheckResult(diskSpaceResult)
+        results.add(diskSpaceResult)
 
         // Check write permissions
-        results.add(checkWritePermissions())
+        logger.info { "--- Checking Write Permissions ---" }
+        val writePermResult = checkWritePermissions()
+        logCheckResult(writePermResult)
+        results.add(writePermResult)
 
         // Check network connectivity
-        results.add(checkNetworkConnectivity())
+        logger.info { "--- Checking Network Connectivity ---" }
+        val networkResult = checkNetworkConnectivity()
+        logCheckResult(networkResult)
+        results.add(networkResult)
 
         // Record which components already exist (for rollback)
+        val existingComponents = getExistingComponents()
+        logger.info { "--- Checking Existing Components ---" }
+        if (existingComponents.isEmpty()) {
+            logger.info { "No existing components found" }
+        } else {
+            existingComponents.forEach { componentId ->
+                logger.info { "Found existing component: $componentId at ${getInstallPath(componentId)}" }
+            }
+        }
         preInstallState = PreInstallationState(
-            existingComponents = getExistingComponents()
+            existingComponents = existingComponents
         )
 
         // Add platform-specific checks
-        results.addAll(platformSpecificChecks())
+        logger.info { "--- Running Platform-Specific Checks ---" }
+        val platformResults = platformSpecificChecks()
+        platformResults.forEach { logCheckResult(it) }
+        results.addAll(platformResults)
+
+        // Summary
+        val passed = results.count { it.isPassed() }
+        val warnings = results.count { it.isWarning() }
+        val failed = results.count { it.isFailed() }
+        logger.info { "========== Pre-Installation Checks Complete ==========" }
+        logger.info { "Results: $passed passed, $warnings warnings, $failed failed" }
 
         _state = if (results.any { it.isFailed() }) InstallerState.FAILED else InstallerState.IDLE
         return results
+    }
+
+    /**
+     * Logs a pre-installation check result with appropriate log level.
+     */
+    private fun logCheckResult(result: PreInstallCheckResult) {
+        when (result) {
+            is PreInstallCheckResult.Passed -> {
+                logger.info { "[PASSED] ${result.checkName}: ${result.details ?: "OK"}" }
+            }
+
+            is PreInstallCheckResult.Warning -> {
+                logger.warn { "[WARNING] ${result.checkName}: ${result.message}" }
+                result.suggestion?.let { logger.warn { "  Suggestion: $it" } }
+            }
+
+            is PreInstallCheckResult.Failed -> {
+                logger.error { "[FAILED] ${result.checkName}: ${result.reason}" }
+                result.suggestion?.let { logger.error { "  Suggestion: $it" } }
+            }
+        }
     }
 
     override fun install(): Flow<InstallationProgress> = flow {
@@ -357,6 +414,12 @@ abstract class AbstractDependencyInstaller(
                 "${platformPaths.modelsDir}${File.separator}whisper"
 
             ComponentId.LIBRE_TRANSLATE -> platformPaths.libreTranslateDir
+
+            // VC_REDIST is Windows-only and installed system-wide, not in app directory
+            ComponentId.VC_REDIST -> System.getenv("SystemRoot") ?: "C:\\Windows"
+
+            // PYTHON is Windows-only and installed system-wide
+            ComponentId.PYTHON -> System.getenv("LOCALAPPDATA")?.let { "$it\\Programs\\Python" } ?: "C:\\Python"
         }
     }
 

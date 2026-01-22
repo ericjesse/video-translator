@@ -1,8 +1,11 @@
 package com.ericjesse.videotranslator.di
 
+import com.ericjesse.videotranslator.domain.installer.DependencyInstaller
+import com.ericjesse.videotranslator.infrastructure.archive.ArchiveExtractor
 import com.ericjesse.videotranslator.infrastructure.config.ConfigManager
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.http.HttpClientFactory
+import com.ericjesse.videotranslator.infrastructure.installer.DependencyInstallerFactory
 import com.ericjesse.videotranslator.infrastructure.network.ConnectivityChecker
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
 import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceChecker
@@ -25,6 +28,7 @@ val infrastructureModule = module {
     single { ConfigManager(get()) }
     single<HttpClient> { HttpClientFactory.create() }
     single { ProcessExecutor() }
+    single { ArchiveExtractor() }
 
     // Resource management
     single { TempFileManager(get()) }
@@ -35,6 +39,16 @@ val infrastructureModule = module {
     single { ConnectivityChecker(get()) }
     single { LibreTranslateService(get(), get()) }
     single { UpdateManager(get(), get(), get()) }
+
+    // Dependency installer (platform-specific)
+    single<DependencyInstaller> {
+        DependencyInstallerFactory.create(
+            platformPaths = get(),
+            httpClient = get(),
+            processExecutor = get(),
+            archiveExtractor = get()
+        )
+    }
 
     // Internationalization
     single { I18nManager(get()) }

@@ -25,6 +25,14 @@ interface DependencyInstaller {
     fun getComponentDescriptions(): List<ComponentDescription>
 
     /**
+     * Returns platform-specific warnings that apply to the entire installation process.
+     * These warnings should be displayed prominently before installation begins.
+     *
+     * @return List of warning messages for the user.
+     */
+    fun getPlatformWarnings(): List<String> = emptyList()
+
+    /**
      * Performs pre-installation checks to ensure the system is ready.
      * Checks may include: disk space, permissions, network connectivity,
      * existing installations, required system dependencies.
@@ -100,7 +108,9 @@ enum class ComponentId {
     WHISPER_MODEL_SMALL,
     WHISPER_MODEL_MEDIUM,
     WHISPER_MODEL_LARGE,
-    LIBRE_TRANSLATE
+    LIBRE_TRANSLATE,
+    VC_REDIST, // Windows-only: Visual C++ Redistributable
+    PYTHON // Windows-only: Python runtime for LibreTranslate
 }
 
 /**
