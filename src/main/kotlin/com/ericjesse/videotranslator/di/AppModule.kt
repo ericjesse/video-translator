@@ -5,6 +5,7 @@ import com.ericjesse.videotranslator.infrastructure.resources.DiskSpaceChecker
 import com.ericjesse.videotranslator.infrastructure.resources.ResourceManager
 import com.ericjesse.videotranslator.infrastructure.resources.TempFileManager
 import com.ericjesse.videotranslator.infrastructure.translation.LibreTranslateService
+import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
 import io.ktor.client.HttpClient
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
@@ -33,6 +34,20 @@ object AppModule {
         }
 
         isInitialized = true
+
+        // Purge setup-wizard cache entries older than one week on startup.
+        // Runs on a daemon thread so slow disks can't delay app launch; any
+        // failure is swallowed because cache cleanup must never block startup.
+        Thread({
+            try {
+                KoinPlatform.getKoin().get<UpdateManager>().cleanupStaleCache()
+            } catch (_: Throwable) {
+                // Best-effort cleanup.
+            }
+        }, "install-cache-cleanup").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     /**

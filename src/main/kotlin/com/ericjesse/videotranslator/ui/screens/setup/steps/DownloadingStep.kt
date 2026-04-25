@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,7 +53,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.ericjesse.videotranslator.infrastructure.update.UpdateManager
+import com.ericjesse.videotranslator.domain.installer.ComponentId
+import com.ericjesse.videotranslator.domain.installer.DependencyInstaller
+import com.ericjesse.videotranslator.domain.installer.InstallationProgress
 import com.ericjesse.videotranslator.ui.components.AppButton
 import com.ericjesse.videotranslator.ui.components.AppCard
 import com.ericjesse.videotranslator.ui.components.AppLinearProgressBar
@@ -117,7 +120,7 @@ fun DownloadingStep(
     modifier: Modifier = Modifier
 ) {
     val i18n: I18nManager = koinInject()
-    val updateManager: UpdateManager = koinInject()
+    val dependencyInstaller: DependencyInstaller = koinInject()
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
@@ -184,231 +187,146 @@ fun DownloadingStep(
     var showCancelConfirmation by remember { mutableStateOf(false) }
     var hasError by remember { mutableStateOf(false) }
 
-    // Start downloads when component mounts
-    LaunchedEffect(Unit) {
+    // Incrementing this key re-triggers the install LaunchedEffect on retry.
+    // DependencyInstaller reuses any files already downloaded in a previous attempt,
+    // so components that finished earlier pass through almost instantly on retry.
+    var retryCount by remember { mutableIntStateOf(0) }
+
+    // Weights used to blend per-component progress into the overall progress bar.
+    // They need not match actual download sizes — they just determine pacing of the bar.
+    val componentWeights = remember {
+        linkedMapOf(
+            ComponentId.YT_DLP to 0.08f,
+            ComponentId.FFMPEG to 0.17f,
+            ComponentId.WHISPER_CPP to 0.08f,
+            ComponentId.WHISPER_MODEL_BASE to 0.10f,
+            ComponentId.WHISPER_MODEL_SMALL to 0.10f,
+            ComponentId.WHISPER_MODEL_MEDIUM to 0.10f,
+            ComponentId.WHISPER_MODEL_LARGE to 0.10f,
+            ComponentId.PYTHON to 0.07f,
+            ComponentId.LIBRE_TRANSLATE to 0.50f,
+        )
+    }
+
+    // Bookkeeping: how much of each component is done (0..1)
+    val componentProgress = remember { mutableStateOf(mapOf<ComponentId, Float>()) }
+
+    fun recomputeOverall() {
+        val done = componentProgress.value.entries.sumOf {
+            ((componentWeights[it.key] ?: 0f) * it.value).toDouble()
+        }
+        val total = componentWeights.values.sum().coerceAtLeast(0.0001f).toDouble()
+        overallProgress = (done / total).toFloat().coerceIn(0f, 1f)
+    }
+
+    // Start install when component mounts and each time the user retries
+    LaunchedEffect(retryCount) {
         isDownloading = true
+        hasError = false
+        componentProgress.value = emptyMap()
+        overallProgress = 0f
 
-        // Download yt-dlp
-        currentStatusMessage = i18n["setup.downloading.from", "yt-dlp", "github.com"]
-        ytDlpState = ytDlpState.copy(status = DownloadStatus.DOWNLOADING)
+        // Map a ComponentId to the corresponding UI row state. Unknown ids (e.g.
+        // VC_REDIST on Windows) are silently ignored — they don't appear in the UI.
+        fun updateComponentState(
+            id: ComponentId,
+            mutator: (ComponentDownloadState) -> ComponentDownloadState,
+        ) {
+            when (id) {
+                ComponentId.YT_DLP -> ytDlpState = mutator(ytDlpState)
+                ComponentId.FFMPEG -> ffmpegState = mutator(ffmpegState)
+                ComponentId.WHISPER_CPP -> whisperCppState = mutator(whisperCppState)
+                ComponentId.WHISPER_MODEL_BASE,
+                ComponentId.WHISPER_MODEL_SMALL,
+                ComponentId.WHISPER_MODEL_MEDIUM,
+                ComponentId.WHISPER_MODEL_LARGE -> whisperModelState = mutator(whisperModelState)
+                ComponentId.PYTHON -> pythonState = mutator(pythonState)
+                ComponentId.LIBRE_TRANSLATE -> libreTranslateState = mutator(libreTranslateState)
+                ComponentId.VC_REDIST -> Unit // no dedicated UI row; proceeds silently
+            }
+        }
 
         try {
-            updateManager.installYtDlp()
+            dependencyInstaller
+                .install(
+                    whisperModelId = selectedWhisperModel,
+                    includeLibreTranslate = true,
+                )
                 .catch { e ->
-                    ytDlpState = ytDlpState.copy(
-                        status = DownloadStatus.ERROR,
-                        errorMessage = e.message ?: "Download failed"
-                    )
                     hasError = true
+                    currentStatusMessage = e.message ?: "Installation failed"
                 }
-                .collect { progress ->
-                    ytDlpState = ytDlpState.copy(
-                        progress = progress.percentage,
-                        downloadedSize = (ytDlpState.totalSize * progress.percentage).toLong(),
-                        message = progress.message
-                    )
-                    overallProgress = progress.percentage * 0.25f
-                }
+                .collect { event ->
+                    when (event) {
+                        is InstallationProgress.Starting -> {
+                            currentStatusMessage = i18n["setup.downloading.from", event.componentName, ""]
+                                .ifBlank { "Installing ${event.componentName}..." }
+                            updateComponentState(event.componentId) {
+                                it.copy(status = DownloadStatus.DOWNLOADING, progress = 0f, errorMessage = null)
+                            }
+                            componentProgress.value = componentProgress.value + (event.componentId to 0f)
+                            recomputeOverall()
+                        }
 
-            if (ytDlpState.status != DownloadStatus.ERROR) {
-                ytDlpState = ytDlpState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
-            }
+                        is InstallationProgress.Downloading -> {
+                            updateComponentState(event.componentId) {
+                                it.copy(
+                                    status = DownloadStatus.DOWNLOADING,
+                                    progress = event.percentage,
+                                    downloadedSize = event.downloadedBytes,
+                                    totalSize = if (event.totalBytes > 0) event.totalBytes else it.totalSize,
+                                )
+                            }
+                            componentProgress.value = componentProgress.value + (event.componentId to event.percentage)
+                            recomputeOverall()
+                        }
+
+                        is InstallationProgress.Installing -> {
+                            updateComponentState(event.componentId) {
+                                it.copy(
+                                    status = DownloadStatus.DOWNLOADING,
+                                    progress = event.percentage,
+                                    message = event.message,
+                                )
+                            }
+                            componentProgress.value = componentProgress.value + (event.componentId to event.percentage)
+                            currentStatusMessage = event.message
+                            recomputeOverall()
+                        }
+
+                        is InstallationProgress.ComponentCompleted -> {
+                            updateComponentState(event.componentId) {
+                                it.copy(status = DownloadStatus.COMPLETE, progress = 1f, errorMessage = null)
+                            }
+                            componentProgress.value = componentProgress.value + (event.componentId to 1f)
+                            recomputeOverall()
+                        }
+
+                        is InstallationProgress.ComponentFailed -> {
+                            updateComponentState(event.componentId) {
+                                it.copy(status = DownloadStatus.ERROR, errorMessage = event.error)
+                            }
+                            hasError = true
+                            currentStatusMessage = event.error
+                        }
+
+                        is InstallationProgress.Completed -> {
+                            overallProgress = 1f
+                            currentStatusMessage = i18n["setup.downloading.status.complete"]
+                        }
+
+                        is InstallationProgress.Failed -> {
+                            hasError = true
+                            currentStatusMessage = event.error
+                        }
+
+                        is InstallationProgress.Cancelling,
+                        is InstallationProgress.Cancelled -> Unit
+                    }
+                }
         } catch (e: Exception) {
-            ytDlpState = ytDlpState.copy(
-                status = DownloadStatus.ERROR,
-                errorMessage = e.message ?: "Download failed"
-            )
             hasError = true
-        }
-
-        if (hasError) {
-            isDownloading = false
-            return@LaunchedEffect
-        }
-
-        // Download FFmpeg (25% - 45%)
-        currentStatusMessage = i18n["setup.downloading.from", "FFmpeg", "gyan.dev"]
-        ffmpegState = ffmpegState.copy(status = DownloadStatus.DOWNLOADING)
-
-        try {
-            updateManager.installFfmpeg()
-                .catch { e ->
-                    ffmpegState = ffmpegState.copy(
-                        status = DownloadStatus.ERROR,
-                        errorMessage = e.message ?: "Download failed"
-                    )
-                    hasError = true
-                }
-                .collect { progress ->
-                    ffmpegState = ffmpegState.copy(
-                        progress = progress.percentage,
-                        downloadedSize = (ffmpegState.totalSize * progress.percentage).toLong(),
-                        message = progress.message
-                    )
-                    overallProgress = 0.25f + progress.percentage * 0.20f
-                }
-
-            if (ffmpegState.status != DownloadStatus.ERROR) {
-                ffmpegState = ffmpegState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
-            }
-        } catch (e: Exception) {
-            ffmpegState = ffmpegState.copy(
-                status = DownloadStatus.ERROR,
-                errorMessage = e.message ?: "Download failed"
-            )
-            hasError = true
-        }
-
-        if (hasError) {
-            isDownloading = false
-            return@LaunchedEffect
-        }
-
-        // Download whisper.cpp binary (45% - 60%)
-        currentStatusMessage = i18n["setup.downloading.from", "whisper.cpp", "github.com"]
-        whisperCppState = whisperCppState.copy(status = DownloadStatus.DOWNLOADING)
-
-        try {
-            updateManager.installWhisperCpp()
-                .catch { e ->
-                    whisperCppState = whisperCppState.copy(
-                        status = DownloadStatus.ERROR,
-                        errorMessage = e.message ?: "Download failed"
-                    )
-                    hasError = true
-                }
-                .collect { progress ->
-                    whisperCppState = whisperCppState.copy(
-                        progress = progress.percentage,
-                        downloadedSize = (whisperCppState.totalSize * progress.percentage).toLong(),
-                        message = progress.message
-                    )
-                    overallProgress = 0.45f + progress.percentage * 0.15f
-                }
-
-            if (whisperCppState.status != DownloadStatus.ERROR) {
-                whisperCppState = whisperCppState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
-            }
-        } catch (e: Exception) {
-            whisperCppState = whisperCppState.copy(
-                status = DownloadStatus.ERROR,
-                errorMessage = e.message ?: "Download failed"
-            )
-            hasError = true
-        }
-
-        if (hasError) {
-            isDownloading = false
-            return@LaunchedEffect
-        }
-
-        // Download Whisper model (60% - 80%)
-        currentStatusMessage = i18n["setup.downloading.from", "Whisper $selectedWhisperModel model", "huggingface.co"]
-        whisperModelState = whisperModelState.copy(status = DownloadStatus.DOWNLOADING)
-
-        try {
-            updateManager.installWhisperModel(selectedWhisperModel)
-                .catch { e ->
-                    whisperModelState = whisperModelState.copy(
-                        status = DownloadStatus.ERROR,
-                        errorMessage = e.message ?: "Download failed"
-                    )
-                    hasError = true
-                }
-                .collect { progress ->
-                    whisperModelState = whisperModelState.copy(
-                        progress = progress.percentage,
-                        downloadedSize = (whisperModelState.totalSize * progress.percentage).toLong(),
-                        message = progress.message
-                    )
-                    overallProgress = 0.60f + progress.percentage * 0.20f
-                }
-
-            if (whisperModelState.status != DownloadStatus.ERROR) {
-                whisperModelState = whisperModelState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
-            }
-        } catch (e: Exception) {
-            whisperModelState = whisperModelState.copy(
-                status = DownloadStatus.ERROR,
-                errorMessage = e.message ?: "Download failed"
-            )
-            hasError = true
-        }
-
-        if (hasError) {
-            isDownloading = false
-            return@LaunchedEffect
-        }
-
-        // Install Python (80% - 90%)
-        currentStatusMessage = i18n["setup.downloading.installing", "Python"]
-        pythonState = pythonState.copy(status = DownloadStatus.DOWNLOADING)
-
-        try {
-            updateManager.installPython()
-                .catch { e ->
-                    pythonState = pythonState.copy(
-                        status = DownloadStatus.ERROR,
-                        errorMessage = e.message ?: "Installation failed"
-                    )
-                    hasError = true
-                }
-                .collect { progress ->
-                    pythonState = pythonState.copy(
-                        progress = progress.percentage,
-                        downloadedSize = (pythonState.totalSize * progress.percentage).toLong(),
-                        message = progress.message
-                    )
-                    overallProgress = 0.80f + progress.percentage * 0.10f
-                }
-
-            if (pythonState.status != DownloadStatus.ERROR) {
-                pythonState = pythonState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
-            }
-        } catch (e: Exception) {
-            pythonState = pythonState.copy(
-                status = DownloadStatus.ERROR,
-                errorMessage = e.message ?: "Installation failed"
-            )
-            hasError = true
-        }
-
-        if (hasError) {
-            isDownloading = false
-            return@LaunchedEffect
-        }
-
-        // Install LibreTranslate (90% - 100%)
-        currentStatusMessage = i18n["setup.downloading.installing", "LibreTranslate"]
-        libreTranslateState = libreTranslateState.copy(status = DownloadStatus.DOWNLOADING)
-
-        try {
-            updateManager.installLibreTranslate()
-                .catch { e ->
-                    libreTranslateState = libreTranslateState.copy(
-                        status = DownloadStatus.ERROR,
-                        errorMessage = e.message ?: "Installation failed"
-                    )
-                    hasError = true
-                }
-                .collect { progress ->
-                    libreTranslateState = libreTranslateState.copy(
-                        progress = progress.percentage,
-                        downloadedSize = (libreTranslateState.totalSize * progress.percentage).toLong(),
-                        message = progress.message
-                    )
-                    overallProgress = 0.90f + progress.percentage * 0.10f
-                }
-
-            if (libreTranslateState.status != DownloadStatus.ERROR) {
-                libreTranslateState = libreTranslateState.copy(status = DownloadStatus.COMPLETE, progress = 1f)
-            }
-        } catch (e: Exception) {
-            libreTranslateState = libreTranslateState.copy(
-                status = DownloadStatus.ERROR,
-                errorMessage = e.message ?: "Installation failed"
-            )
-            hasError = true
+            currentStatusMessage = e.message ?: "Installation failed"
         }
 
         isDownloading = false
@@ -600,7 +518,8 @@ fun DownloadingStep(
                 AppButton(
                     text = i18n["action.retry"],
                     onClick = {
-                        // Reset error states and retry
+                        // Reset error states back to pending; cached downloads from the
+                        // previous attempt will be reused by UpdateManager.
                         hasError = false
                         if (ytDlpState.status == DownloadStatus.ERROR) {
                             ytDlpState = ytDlpState.copy(
@@ -645,6 +564,8 @@ fun DownloadingStep(
                             )
                         }
                         overallProgress = 0f
+                        // Re-fire the download LaunchedEffect
+                        retryCount++
                     },
                     style = ButtonStyle.Primary,
                     size = ButtonSize.Medium,

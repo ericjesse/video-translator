@@ -401,21 +401,24 @@ class SubtitleRenderer(
         style: SubtitleStyle,
         isAssFormat: Boolean,
     ): String {
-        // Escape path for FFmpeg filter syntax (not shell syntax!)
-        // FFmpeg filter special chars that need escaping: \ ' : [ ] # ;
-        // Order matters: escape backslashes first, then other special chars
+        // FFmpeg parses the -vf value through TWO escape passes:
+        //   Pass 1 (filter graph): terminators ',;[]', '\X' -> X
+        //   Pass 2 (filter options): terminators ':=', '\X' -> X
+        // A literal char that is special at level N must be `\`-escaped N times.
+        //
+        // Strategy: convert Windows backslashes to forward slashes (which ffmpeg
+        // accepts on Windows for file paths), then double-escape the drive-letter
+        // colon so it survives Pass 1 (\\: -> \:) and Pass 2 (\: -> :). With this
+        // approach, the only special character we have to handle is ':'. Other
+        // path chars including '#', '_', spaces, accents, etc. pass through.
+        //
+        // Single-quoting the path was tried and does NOT work: Pass 1 consumes
+        // the quote markers, leaving Pass 2 to split on the drive-letter ':'.
         val escapedPath = subtitlePath
-            .replace("\\", "\\\\")      // \ -> \\
-            .replace("'", "\\'")        // ' -> \'
-            .replace(":", "\\:")        // : -> \:
-            .replace("[", "\\[")        // [ -> \[
-            .replace("]", "\\]")        // ] -> \]
-            .replace("#", "\\#")        // # -> \# (hashtags in filenames)
-            .replace(";", "\\;")        // ; -> \; (filter separator)
+            .replace("\\", "/")             // Windows path separator -> /
+            .replace(":", "\\\\:")          // : -> \\: (4 Kotlin chars = 3 string chars: \\:)
 
         return if (isAssFormat) {
-            // ASS format - styling is in the file, just reference it
-            // Use quotes to handle paths with spaces (FFmpeg filter syntax, not shell)
             "ass=$escapedPath"
         } else {
             // SRT format - apply styling via force_style
@@ -476,12 +479,32 @@ class SubtitleRenderer(
             stage = RenderStage.ENCODING
         )
 
-        processExecutor.execute(command) { line ->
-            val updatedProgress = FfmpegProgressParser.parseLine(line, totalDuration, currentProgress)
-            if (updatedProgress != null) {
-                currentProgress = updatedProgress
-                onProgress(currentProgress)
+        // Buffer the last N non-progress lines so we can surface ffmpeg's actual
+        // error (filter-graph parse failures, missing files, codec issues, etc.)
+        // on a non-zero exit. Without this, ffmpeg errors are silently dropped
+        // by the progress parser and we're left with only "exit code -22".
+        val tail = ArrayDeque<String>()
+        val tailLimit = 50
+
+        try {
+            processExecutor.execute(command) { line ->
+                val updatedProgress = FfmpegProgressParser.parseLine(line, totalDuration, currentProgress)
+                if (updatedProgress != null) {
+                    currentProgress = updatedProgress
+                    onProgress(currentProgress)
+                } else {
+                    if (tail.size >= tailLimit) tail.removeFirst()
+                    tail.addLast(line)
+                }
             }
+        } catch (e: Exception) {
+            if (tail.isNotEmpty()) {
+                logger.error {
+                    "FFmpeg failed. Last ${tail.size} output lines:\n" +
+                        tail.joinToString("\n") { "  $it" }
+                }
+            }
+            throw e
         }
     }
 

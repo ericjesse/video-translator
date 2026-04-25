@@ -9,6 +9,7 @@ import com.ericjesse.videotranslator.domain.installer.InstalledComponent
 import com.ericjesse.videotranslator.domain.installer.InstallerState
 import com.ericjesse.videotranslator.domain.installer.PreInstallCheckResult
 import com.ericjesse.videotranslator.domain.installer.PreInstallationState
+import com.ericjesse.videotranslator.domain.installer.whisperModelComponentId
 import com.ericjesse.videotranslator.infrastructure.archive.ArchiveExtractor
 import com.ericjesse.videotranslator.infrastructure.config.PlatformPaths
 import com.ericjesse.videotranslator.infrastructure.process.ProcessExecutor
@@ -169,7 +170,10 @@ abstract class AbstractDependencyInstaller(
         }
     }
 
-    override fun install(): Flow<InstallationProgress> = flow {
+    override fun install(
+        whisperModelId: String,
+        includeLibreTranslate: Boolean,
+    ): Flow<InstallationProgress> = flow {
         if (_state == InstallerState.INSTALLING) {
             emit(
                 InstallationProgress.Failed(
@@ -187,7 +191,7 @@ abstract class AbstractDependencyInstaller(
         warnings.clear()
 
         val startTime = System.currentTimeMillis()
-        val components = getComponentDescriptions().filter { !it.isOptional }
+        val components = resolveComponentsToInstall(whisperModelId, includeLibreTranslate)
 
         try {
             components.forEachIndexed { index, component ->
@@ -198,6 +202,14 @@ abstract class AbstractDependencyInstaller(
                 // Skip if already installed
                 if (isComponentInstalled(component.id)) {
                     logger.info { "Component ${component.name} already installed, skipping" }
+                    emit(
+                        InstallationProgress.ComponentCompleted(
+                            componentId = component.id,
+                            componentName = component.name,
+                            installPath = getInstallPath(component.id),
+                            version = null,
+                        )
+                    )
                     return@forEachIndexed
                 }
 
@@ -211,9 +223,17 @@ abstract class AbstractDependencyInstaller(
                 )
 
                 try {
-                    // Download
-                    val downloadedFile = downloadComponent(component) { progress ->
-                        // Emit download progress - need to use a channel for this
+                    // Download, forwarding byte-level progress to the flow
+                    val downloadedFile = downloadComponent(component) { pct, dl, total ->
+                        emit(
+                            InstallationProgress.Downloading(
+                                componentId = component.id,
+                                componentName = component.name,
+                                downloadedBytes = dl,
+                                totalBytes = total,
+                                percentage = pct,
+                            )
+                        )
                     }
 
                     if (cancelled) throw CancellationException("Installation cancelled by user")
@@ -331,18 +351,90 @@ abstract class AbstractDependencyInstaller(
     // ==================== Protected Helper Methods ====================
 
     /**
-     * Downloads a component and reports progress.
+     * Filters [getComponentDescriptions] down to the components to actually install
+     * for this wizard run.
+     *
+     * Rules:
+     *  - Always include non-optional core components (yt-dlp, FFmpeg, whisper.cpp,
+     *    VC_REDIST on Windows).
+     *  - Include the Whisper model variant matching [whisperModelId] and drop any
+     *    other WHISPER_MODEL_* entries so only the selected one is installed.
+     *  - Include PYTHON + LIBRE_TRANSLATE only when [includeLibreTranslate] is true.
+     *
+     * Platform installers may override this if they need a more elaborate policy.
+     */
+    protected open fun resolveComponentsToInstall(
+        whisperModelId: String,
+        includeLibreTranslate: Boolean,
+    ): List<ComponentDescription> {
+        val selectedModel = whisperModelComponentId(whisperModelId)
+        val whisperModelIds = setOf(
+            ComponentId.WHISPER_MODEL_BASE,
+            ComponentId.WHISPER_MODEL_SMALL,
+            ComponentId.WHISPER_MODEL_MEDIUM,
+            ComponentId.WHISPER_MODEL_LARGE,
+        )
+        val libreTranslateIds = setOf(ComponentId.PYTHON, ComponentId.LIBRE_TRANSLATE)
+
+        return getComponentDescriptions().filter { component ->
+            when {
+                component.id in whisperModelIds -> component.id == selectedModel
+                component.id in libreTranslateIds -> includeLibreTranslate
+                else -> !component.isOptional
+            }
+        }
+    }
+
+
+    /**
+     * Shared cache directory for wizard downloads. Kept in sync with
+     * `UpdateManager.installCacheDir` so archives from either code path
+     * (wizard install vs. granular update) can reuse each other.
+     */
+    protected val installCacheDir: File
+        get() = File(platformPaths.cacheDir, "install").apply { mkdirs() }
+
+    /**
+     * Downloads a component, reusing any cached file whose size already matches
+     * the server's Content-Length. Reports progress via a suspending callback so
+     * the install flow can emit [InstallationProgress.Downloading] events.
+     *
+     * @param component The component being downloaded (used for logging only).
+     * @param onProgress Called as bytes arrive: `(fraction 0..1, downloadedBytes, totalBytes)`.
+     *   `totalBytes` is -1 when the server doesn't expose Content-Length.
      */
     protected suspend fun downloadComponent(
         component: ComponentDescription,
-        onProgress: (Float) -> Unit,
+        onProgress: suspend (Float, Long, Long) -> Unit,
     ): File {
         val url = getDownloadUrl(component.id)
-        val downloadDir = File(platformPaths.cacheDir)
-        downloadDir.mkdirs()
-
         val fileName = url.substringAfterLast("/")
-        val downloadFile = File(downloadDir, fileName)
+        val downloadFile = File(installCacheDir, fileName)
+
+        // Cache hit: a prior wizard run already downloaded this file successfully.
+        // Skip the network round-trip when size matches the server's Content-Length.
+        if (downloadFile.exists() && downloadFile.length() > 0) {
+            val remoteLength = try {
+                httpClient.head(url).contentLength()
+            } catch (e: Exception) {
+                logger.debug { "HEAD ${url} for cache check failed: ${e.message}" }
+                null
+            }
+            if (remoteLength != null && remoteLength > 0 && remoteLength == downloadFile.length()) {
+                logger.info {
+                    "Reusing cached download for ${component.name}: ${downloadFile.absolutePath} " +
+                        "(${downloadFile.length()} bytes)"
+                }
+                onProgress(1f, downloadFile.length(), downloadFile.length())
+                return downloadFile
+            } else {
+                logger.info {
+                    "Cached ${component.name} is stale (local=${downloadFile.length()}, " +
+                        "remote=$remoteLength) — re-downloading"
+                }
+                downloadFile.delete()
+            }
+        }
 
         logger.info { "Downloading ${component.name} from $url" }
 
@@ -366,7 +458,7 @@ abstract class AbstractDependencyInstaller(
                     downloaded += bytesRead
 
                     if (contentLength > 0) {
-                        onProgress(downloaded.toFloat() / contentLength)
+                        onProgress(downloaded.toFloat() / contentLength, downloaded, contentLength)
                     }
                 }
             }

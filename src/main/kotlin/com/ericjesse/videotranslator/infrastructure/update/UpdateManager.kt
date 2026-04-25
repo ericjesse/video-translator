@@ -60,6 +60,14 @@ class UpdateManager(
     private val json = Json { ignoreUnknownKeys = true }
     private val archiveExtractor = ArchiveExtractor()
 
+    /**
+     * Dedicated cache directory for setup-wizard downloads (archives, partial `.tmp` files,
+     * app update installers). Kept separate from other consumers of `cacheDir`
+     * (e.g. video downloads, transcription scratch) so it can be cleaned independently.
+     */
+    private val installCacheDir: File
+        get() = File(platformPaths.cacheDir, "install").apply { mkdirs() }
+
     companion object {
         const val APP_REPO = "ericjesse/video-translator"
         const val YTDLP_REPO = "yt-dlp/yt-dlp"
@@ -69,6 +77,11 @@ class UpdateManager(
         const val MAX_RETRIES = 3
         const val INITIAL_RETRY_DELAY_MS = 1000L
         const val BUFFER_SIZE = 8192
+
+        /** Wizard download cache is retained for this many days before being purged. */
+        const val INSTALL_CACHE_MAX_AGE_DAYS = 7L
+        const val INSTALL_CACHE_MAX_AGE_MS = INSTALL_CACHE_MAX_AGE_DAYS * 24L * 60L * 60L * 1000L
+
 
         val WHISPER_MODELS = mapOf(
             "tiny" to "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
@@ -127,8 +140,8 @@ class UpdateManager(
     fun downloadAppUpdate(updateInfo: AppUpdateInfo): Flow<DownloadProgress> = channelFlow {
         send(DownloadProgress(0f, "Starting download..."))
 
-        val tempFile = File(platformPaths.cacheDir, "update-${updateInfo.newVersion}.tmp")
-        val targetFile = File(platformPaths.cacheDir, "update-${updateInfo.newVersion}")
+        val tempFile = File(installCacheDir, "update-${updateInfo.newVersion}.tmp")
+        val targetFile = File(installCacheDir, "update-${updateInfo.newVersion}")
 
         downloadFileWithRetry(
             url = updateInfo.downloadUrl,
@@ -377,7 +390,7 @@ class UpdateManager(
 
         val release = getLatestRelease(YTDLP_REPO)
         val downloadUrl = getYtDlpDownloadUrl(release)
-        val tempFile = File(platformPaths.cacheDir, "yt-dlp.tmp")
+        val tempFile = File(installCacheDir, "yt-dlp.tmp")
         val targetFile = File(platformPaths.getBinaryPath("yt-dlp"))
 
         onProgress(0.05f, "Downloading yt-dlp ${release.tagName}...")
@@ -740,9 +753,9 @@ class UpdateManager(
 
         val downloadUrl = getFfmpegDownloadUrl()
         val archiveExtension = if (platformPaths.operatingSystem == OperatingSystem.LINUX) ".tar.xz" else ".zip"
-        val tempFile = File(platformPaths.cacheDir, "ffmpeg-download.tmp")
-        val archiveFile = File(platformPaths.cacheDir, "ffmpeg$archiveExtension")
-        val extractDir = File(platformPaths.cacheDir, "ffmpeg-extract")
+        val tempFile = File(installCacheDir, "ffmpeg-download.tmp")
+        val archiveFile = File(installCacheDir, "ffmpeg$archiveExtension")
+        val extractDir = File(installCacheDir, "ffmpeg-extract")
 
         onProgress(0.05f, "Downloading FFmpeg...")
 
@@ -763,16 +776,23 @@ class UpdateManager(
         }
         extractDir.mkdirs()
 
-        // Extract the archive
-        val extractionResult = archiveExtractor.extractBlocking(
-            archivePath = archiveFile.toPath(),
-            destinationDir = extractDir.toPath(),
-            config = ExtractionConfig(flattenSingleRoot = true)
-        ) { progress ->
-            val extractProgress = progress.percentage
-            if (extractProgress >= 0) {
-                onProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}")
+        // Extract the archive — if this fails the cached archive is probably corrupt,
+        // so drop it to force a fresh download on the next attempt.
+        val extractionResult = try {
+            archiveExtractor.extractBlocking(
+                archivePath = archiveFile.toPath(),
+                destinationDir = extractDir.toPath(),
+                config = ExtractionConfig(flattenSingleRoot = true)
+            ) { progress ->
+                val extractProgress = progress.percentage
+                if (extractProgress >= 0) {
+                    onProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}")
+                }
             }
+        } catch (e: Exception) {
+            logger.warn { "FFmpeg extraction failed, invalidating cached archive: ${e.message}" }
+            archiveFile.delete()
+            throw e
         }
 
         onProgress(0.9f, "Installing FFmpeg binaries...")
@@ -828,7 +848,7 @@ class UpdateManager(
         send(DownloadProgress(0f, "Preparing to download Whisper $modelName model..."))
 
         val modelDir = File(platformPaths.modelsDir, "whisper").apply { mkdirs() }
-        val tempFile = File(platformPaths.cacheDir, "ggml-$modelName.bin.tmp")
+        val tempFile = File(installCacheDir, "ggml-$modelName.bin.tmp")
         val targetFile = File(modelDir, "ggml-$modelName.bin")
 
         downloadFileWithRetry(
@@ -1250,18 +1270,17 @@ class UpdateManager(
     private suspend fun installWhisperCppFromGitHub(
         onProgress: suspend (Float, String) -> Unit
     ) {
-        // On Windows, ensure Visual C++ Redistributable is installed (required for whisper.cpp)
-        if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
-            ensureVcRedistInstalled(onProgress)
-        }
-
+        // The VC++ runtime required for whisper.cpp is verified/installed by the
+        // wizard's DependencyInstaller on first setup; modern Windows 11 already
+        // ships a compatible 14.x runtime, so this forced-update path doesn't
+        // repeat the check.
         onProgress(0.1f, "Fetching whisper.cpp release...")
 
         val release = getLatestRelease(WHISPER_REPO)
         val downloadUrl = getWhisperCppDownloadUrl(release)
-        val tempFile = File(platformPaths.cacheDir, "whisper-download.tmp")
-        val archiveFile = File(platformPaths.cacheDir, "whisper.zip")
-        val extractDir = File(platformPaths.cacheDir, "whisper-extract")
+        val tempFile = File(installCacheDir, "whisper-download.tmp")
+        val archiveFile = File(installCacheDir, "whisper.zip")
+        val extractDir = File(installCacheDir, "whisper-extract")
 
         onProgress(0.15f, "Downloading whisper.cpp ${release.tagName}...")
 
@@ -1282,16 +1301,23 @@ class UpdateManager(
         }
         extractDir.mkdirs()
 
-        // Extract the archive
-        val extractionResult = archiveExtractor.extractBlocking(
-            archivePath = archiveFile.toPath(),
-            destinationDir = extractDir.toPath(),
-            config = ExtractionConfig(flattenSingleRoot = true)
-        ) { progress ->
-            val extractProgress = progress.percentage
-            if (extractProgress >= 0) {
-                onProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}")
+        // Extract the archive — if this fails the cached archive is probably corrupt,
+        // so drop it to force a fresh download on the next attempt.
+        val extractionResult = try {
+            archiveExtractor.extractBlocking(
+                archivePath = archiveFile.toPath(),
+                destinationDir = extractDir.toPath(),
+                config = ExtractionConfig(flattenSingleRoot = true)
+            ) { progress ->
+                val extractProgress = progress.percentage
+                if (extractProgress >= 0) {
+                    onProgress(0.7f + extractProgress * 0.2f, "Extracting: ${progress.currentFile}")
+                }
             }
+        } catch (e: Exception) {
+            logger.warn { "whisper.cpp extraction failed, invalidating cached archive: ${e.message}" }
+            archiveFile.delete()
+            throw e
         }
 
         onProgress(0.9f, "Installing whisper.cpp...")
@@ -1372,641 +1398,12 @@ class UpdateManager(
 
     // ========== Python Installation ==========
 
-    /**
-     * Installs Python 3.11 using platform-specific package managers.
-     * - macOS: Uses Homebrew
-     * - Linux: Uses system package managers (apt, dnf, pacman, etc.)
-     * - Windows: Uses winget
-     */
-    fun installPython(): Flow<DownloadProgress> = channelFlow {
-        when (platformPaths.operatingSystem) {
-            OperatingSystem.MACOS -> {
-                installPythonViaBrew { progress, message ->
-                    send(DownloadProgress(progress, message))
-                }
-            }
-
-            OperatingSystem.LINUX -> {
-                installPythonOnLinux { progress, message ->
-                    send(DownloadProgress(progress, message))
-                }
-            }
-
-            OperatingSystem.WINDOWS -> {
-                installPythonOnWindows { progress, message ->
-                    send(DownloadProgress(progress, message))
-                }
-            }
-        }
-    }.flowOn(Dispatchers.IO)
-
-    /**
-     * Installs Python via Homebrew (macOS).
-     */
-    private suspend fun installPythonViaBrew(
-        onProgress: suspend (Float, String) -> Unit,
-    ) {
-        onProgress(0f, "Checking for Homebrew...")
-
-        val brewPath = findBrewPath()
-        if (brewPath == null) {
-            throw UpdateException(
-                "Homebrew is required to install Python on macOS. " +
-                        "Please install Homebrew from https://brew.sh and try again."
-            )
-        }
-
-        logger.info { "Found Homebrew at: $brewPath" }
-        onProgress(0.1f, "Installing Python via Homebrew...")
-
-        val process = ProcessBuilder(brewPath, "install", "python@3.11")
-            .redirectErrorStream(true)
-            .start()
-
-        val reader = process.inputStream.bufferedReader()
-        var line: String?
-        while (reader.readLine().also { line = it } != null) {
-            logger.debug { "[brew] $line" }
-            when {
-                line!!.contains("Downloading") -> onProgress(0.3f, "Downloading Python...")
-                line!!.contains("Pouring") -> onProgress(0.6f, "Installing Python...")
-                line!!.contains("Caveats") -> onProgress(0.8f, "Finalizing installation...")
-            }
-        }
-
-        val exitCode = process.waitFor()
-        if (exitCode != 0) {
-            throw UpdateException("Failed to install Python via Homebrew (exit code: $exitCode)")
-        }
-
-        // Verify installation
-        val pythonPath = findPythonPath()
-        if (pythonPath == null) {
-            throw UpdateException("Python was installed but could not be found in PATH. Try restarting your terminal.")
-        }
-
-        onProgress(1f, "Python installed via Homebrew")
-        logger.info { "Python installed successfully via Homebrew at: $pythonPath" }
-    }
-
-    /**
-     * Installs Python on Linux using package managers.
-     */
-    private suspend fun installPythonOnLinux(
-        onProgress: suspend (Float, String) -> Unit,
-    ) {
-        onProgress(0f, "Detecting package manager...")
-
-        // Try Linuxbrew first if available
-        val brewPath = findBrewPath()
-        if (brewPath != null) {
-            logger.info { "Found Linuxbrew, using it to install Python" }
-            installPythonViaBrew(onProgress)
-            return
-        }
-
-        val packageManager = detectLinuxPackageManagerForPython()
-
-        if (packageManager != null) {
-            onProgress(0.1f, "Installing Python via ${packageManager.name}...")
-            logger.info { "Using ${packageManager.name} to install Python" }
-
-            val process = ProcessBuilder(*packageManager.installCommand.toTypedArray())
-                .redirectErrorStream(true)
-                .start()
-
-            val reader = process.inputStream.bufferedReader()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                logger.debug { "[${packageManager.name}] $line" }
-                when {
-                    line!!.contains("Downloading", ignoreCase = true) ||
-                            line!!.contains("Get:", ignoreCase = true) ->
-                        onProgress(0.3f, "Downloading Python...")
-
-                    line!!.contains("Unpacking", ignoreCase = true) ||
-                            line!!.contains("Installing", ignoreCase = true) ->
-                        onProgress(0.6f, "Installing Python...")
-
-                    line!!.contains("Setting up", ignoreCase = true) ||
-                            line!!.contains("running", ignoreCase = true) ->
-                        onProgress(0.8f, "Finalizing installation...")
-                }
-            }
-
-            val exitCode = process.waitFor()
-            if (exitCode != 0) {
-                throw UpdateException(
-                    "Failed to install Python via ${packageManager.name} (exit code: $exitCode). " +
-                            "You may need to run with sudo privileges or install Python manually."
-                )
-            }
-
-            // Verify installation
-            val pythonPath = findPythonPath()
-            if (pythonPath == null) {
-                throw UpdateException("Python was installed but could not be found. Try restarting your terminal.")
-            }
-
-            onProgress(1f, "Python installed via ${packageManager.name}")
-            logger.info { "Python installed successfully via ${packageManager.name} at: $pythonPath" }
-        } else {
-            throw UpdateException(
-                "No supported package manager found. " +
-                        "Please install Python 3.8+ manually from https://python.org and try again."
-            )
-        }
-    }
-
-    /**
-     * Installs Python on Windows using winget.
-     */
-    private suspend fun installPythonOnWindows(
-        onProgress: suspend (Float, String) -> Unit,
-    ) {
-        onProgress(0f, "Checking for Python...")
-
-        // First check if Python is already installed
-        val existingPythonPath = findPythonPath()
-        if (existingPythonPath != null) {
-            logger.info { "Python is already installed at: $existingPythonPath" }
-            onProgress(1f, "Python is already installed")
-            return
-        }
-
-        onProgress(0.05f, "Checking for winget...")
-
-        // Check if winget is available
-        val wingetAvailable = try {
-            val process = ProcessBuilder("winget", "--version")
-                .redirectErrorStream(true)
-                .start()
-            process.waitFor()
-            process.exitValue() == 0
-        } catch (e: Exception) {
-            false
-        }
-
-        if (!wingetAvailable) {
-            throw UpdateException(
-                "winget is required to install Python on Windows. " +
-                        "Please install Python manually from https://python.org and try again."
-            )
-        }
-
-        onProgress(0.1f, "Installing Python via winget...")
-        logger.info { "Using winget to install Python" }
-
-        val process = ProcessBuilder(
-            "winget", "install", "-e", "--id", "Python.Python.3.11",
-            "--accept-source-agreements", "--accept-package-agreements"
-        )
-            .redirectErrorStream(true)
-            .start()
-
-        val reader = process.inputStream.bufferedReader()
-        val outputLines = mutableListOf<String>()
-        var line: String?
-        while (reader.readLine().also { line = it } != null) {
-            logger.debug { "[winget] $line" }
-            outputLines.add(line!!)
-            when {
-                line!!.contains("Downloading", ignoreCase = true) ->
-                    onProgress(0.3f, "Downloading Python...")
-
-                line!!.contains("Installing", ignoreCase = true) ->
-                    onProgress(0.6f, "Installing Python...")
-
-                line!!.contains("Successfully", ignoreCase = true) ->
-                    onProgress(0.9f, "Finalizing installation...")
-            }
-        }
-
-        val exitCode = process.waitFor()
-        val fullOutput = outputLines.joinToString("\n")
-
-        // Check for "already installed" or "no upgrade" messages (winget returns non-zero in these cases)
-        val alreadyInstalled = fullOutput.contains("already installed", ignoreCase = true) ||
-                fullOutput.contains("No available upgrade", ignoreCase = true) ||
-                fullOutput.contains("No newer package versions", ignoreCase = true)
-
-        if (exitCode != 0 && !alreadyInstalled) {
-            throw UpdateException(
-                "Failed to install Python via winget (exit code: $exitCode). " +
-                        "Please install Python manually from https://python.org and try again."
-            )
-        }
-
-        // Verify installation
-        val pythonPath = findPythonPath()
-        if (pythonPath == null) {
-            throw UpdateException(
-                "Python was installed but could not be found. " +
-                        "Please restart your terminal or computer and try again."
-            )
-        }
-
-        onProgress(1f, if (alreadyInstalled) "Python is already installed" else "Python installed via winget")
-        logger.info { "Python available at: $pythonPath" }
-    }
 
     // ========== Visual C++ Redistributable Installation (Windows) ==========
 
-    /**
-     * Ensures Visual C++ Redistributable is installed on Windows.
-     * Required for whisper.cpp to run.
-     * This is a public function that can be called before transcription to ensure prerequisites are met.
-     *
-     * @return true if VC++ is installed (or was successfully installed), false if installation failed
-     */
-    suspend fun ensureWindowsPrerequisites(): Boolean {
-        if (platformPaths.operatingSystem != OperatingSystem.WINDOWS) {
-            return true // Not needed on other platforms
-        }
-
-        if (isVcRedistInstalled()) {
-            return true
-        }
-
-        logger.info { "Visual C++ Redistributable not found, attempting installation..." }
-
-        return try {
-            ensureVcRedistInstalled { _, _ -> } // No progress reporting needed
-            isVcRedistInstalled() // Verify it was installed
-        } catch (e: Exception) {
-            logger.error(e) { "Failed to install Visual C++ Redistributable" }
-            false
-        }
-    }
-
-    /**
-     * Ensures Visual C++ Redistributable is installed on Windows.
-     * Required for whisper.cpp to run.
-     */
-    private suspend fun ensureVcRedistInstalled(
-        onProgress: suspend (Float, String) -> Unit,
-    ) {
-        onProgress(0f, "Checking Visual C++ Redistributable...")
-
-        // Check if VC++ Redistributable is already installed
-        if (isVcRedistInstalled()) {
-            logger.info { "Visual C++ Redistributable is already installed" }
-            onProgress(0.1f, "Visual C++ Redistributable found")
-            return
-        }
-
-        logger.info { "Visual C++ Redistributable not found, installing..." }
-        onProgress(0.02f, "Installing Visual C++ Redistributable...")
-
-        // Check if winget is available
-        val wingetAvailable = try {
-            val process = ProcessBuilder("winget", "--version")
-                .redirectErrorStream(true)
-                .start()
-            process.waitFor()
-            process.exitValue() == 0
-        } catch (e: Exception) {
-            false
-        }
-
-        if (!wingetAvailable) {
-            logger.warn { "winget not available, skipping VC++ Redistributable installation" }
-            logger.warn { "User may need to manually install from: https://aka.ms/vs/17/release/vc_redist.x64.exe" }
-            onProgress(0.1f, "winget not available - VC++ may need manual install")
-            return
-        }
-
-        onProgress(0.03f, "Installing Visual C++ Redistributable via winget...")
-
-        val process = ProcessBuilder(
-            "winget", "install", "-e", "--id", "Microsoft.VCRedist.2015+.x64",
-            "--accept-source-agreements", "--accept-package-agreements", "--silent"
-        )
-            .redirectErrorStream(true)
-            .start()
-
-        val reader = process.inputStream.bufferedReader()
-        val outputLines = mutableListOf<String>()
-        var line: String?
-        while (reader.readLine().also { line = it } != null) {
-            logger.debug { "[winget] $line" }
-            outputLines.add(line!!)
-            when {
-                line!!.contains("Downloading", ignoreCase = true) ->
-                    onProgress(0.05f, "Downloading Visual C++ Redistributable...")
-
-                line!!.contains("Installing", ignoreCase = true) ->
-                    onProgress(0.07f, "Installing Visual C++ Redistributable...")
-
-                line!!.contains("Successfully", ignoreCase = true) ->
-                    onProgress(0.09f, "Visual C++ Redistributable installed")
-            }
-        }
-
-        val exitCode = process.waitFor()
-        val fullOutput = outputLines.joinToString("\n")
-
-        // Check for "already installed" messages (winget returns non-zero in these cases)
-        val alreadyInstalled = fullOutput.contains("already installed", ignoreCase = true) ||
-                fullOutput.contains("No available upgrade", ignoreCase = true) ||
-                fullOutput.contains("No newer package versions", ignoreCase = true)
-
-        if (exitCode != 0 && !alreadyInstalled) {
-            logger.warn { "Failed to install Visual C++ Redistributable via winget (exit code: $exitCode)" }
-            logger.warn { "winget output: $fullOutput" }
-            logger.warn { "User may need to manually install from: https://aka.ms/vs/17/release/vc_redist.x64.exe" }
-            // Don't throw - continue and let whisper fail with a helpful message if needed
-        } else {
-            logger.info { "Visual C++ Redistributable winget command completed" }
-        }
-
-        // Verify installation was successful
-        if (isVcRedistInstalled()) {
-            logger.info { "Visual C++ Redistributable verified as installed" }
-            onProgress(0.1f, "Visual C++ Redistributable ready")
-        } else {
-            logger.warn { "Visual C++ Redistributable installation could not be verified" }
-            logger.warn { "User may need to manually install from: https://aka.ms/vs/17/release/vc_redist.x64.exe" }
-            onProgress(0.1f, "VC++ may need manual install")
-        }
-    }
-
-    /**
-     * Checks if Visual C++ Redistributable 2015-2022 (x64) is installed.
-     * Checks multiple registry locations as the path can vary.
-     */
-    private fun isVcRedistInstalled(): Boolean {
-        // Check multiple possible registry locations for VC++ Redistributable
-        val registryPaths = listOf(
-            "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
-            "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
-            "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64"
-        )
-
-        for (regPath in registryPaths) {
-            try {
-                val process = ProcessBuilder(
-                    "reg", "query", regPath, "/v", "Installed"
-                )
-                    .redirectErrorStream(true)
-                    .start()
-
-                val output = process.inputStream.bufferedReader().readText()
-                val exitCode = process.waitFor()
-
-                if (exitCode == 0 && output.contains("0x1")) {
-                    logger.debug { "VC++ Redistributable found at: $regPath" }
-                    return true
-                }
-            } catch (e: Exception) {
-                logger.debug { "Failed to check registry path $regPath: ${e.message}" }
-            }
-        }
-
-        // Also try to check if the actual DLL exists
-        val systemRoot = System.getenv("SystemRoot") ?: "C:\\Windows"
-        val vcRuntimeDlls = listOf(
-            "$systemRoot\\System32\\vcruntime140.dll",
-            "$systemRoot\\System32\\msvcp140.dll"
-        )
-
-        val dllsExist = vcRuntimeDlls.all { File(it).exists() }
-        if (dllsExist) {
-            logger.debug { "VC++ Runtime DLLs found in System32" }
-            return true
-        }
-
-        logger.debug { "VC++ Redistributable not found in registry or System32" }
-        return false
-    }
-
-    /**
-     * Detects available Linux package manager for Python installation.
-     */
-    private fun detectLinuxPackageManagerForPython(): LinuxPackageManager? {
-        val packageManagers = listOf(
-            LinuxPackageManager("apt", listOf("apt", "install", "-y", "python3", "python3-pip", "python3-venv")),
-            LinuxPackageManager("dnf", listOf("dnf", "install", "-y", "python3", "python3-pip")),
-            LinuxPackageManager("yum", listOf("yum", "install", "-y", "python3", "python3-pip")),
-            LinuxPackageManager("pacman", listOf("pacman", "-S", "--noconfirm", "python", "python-pip")),
-            LinuxPackageManager("zypper", listOf("zypper", "install", "-y", "python3", "python3-pip")),
-            LinuxPackageManager("apk", listOf("apk", "add", "python3", "py3-pip"))
-        )
-
-        for (pm in packageManagers) {
-            if (isCommandAvailable(pm.name)) {
-                logger.debug { "Found package manager: ${pm.name}" }
-                return pm
-            }
-        }
-
-        return null
-    }
 
     // ========== LibreTranslate Installation ==========
 
-    /**
-     * Installs LibreTranslate in a Python virtual environment.
-     * Automatically installs Python if not found on the system.
-     */
-    fun installLibreTranslate(): Flow<DownloadProgress> = channelFlow {
-        send(DownloadProgress(0f, "Checking Python installation..."))
-
-        var pythonPath = findPythonPath()
-        if (pythonPath == null) {
-            send(DownloadProgress(0.02f, "Python not found, installing..."))
-            logger.info { "Python not found, attempting to install..." }
-
-            // Collect Python installation progress and forward it (scaled to 0.02-0.15 range)
-            installPython().collect { progress ->
-                val scaledProgress = 0.02f + (progress.percentage * 0.13f)
-                send(DownloadProgress(scaledProgress, progress.message))
-            }
-
-            // Re-check for Python after installation
-            pythonPath = findPythonPath()
-            if (pythonPath == null) {
-                throw UpdateException(
-                    "Python installation completed but Python could not be found. " +
-                            "Please restart your terminal and try again."
-                )
-            }
-        }
-
-        logger.info { "Found Python at: $pythonPath" }
-        send(DownloadProgress(0.05f, "Creating virtual environment..."))
-
-        val venvDir = File(platformPaths.libreTranslateDir, "venv")
-        val venvPython = getVenvPythonPath(venvDir)
-        val venvPip = getVenvPipPath(venvDir)
-
-        // Create virtual environment if it doesn't exist
-        if (!venvDir.exists()) {
-            val venvResult = runCommand(listOf(pythonPath, "-m", "venv", venvDir.absolutePath))
-            if (!venvResult.success) {
-                throw UpdateException("Failed to create virtual environment: ${venvResult.error}")
-            }
-            logger.info { "Created virtual environment at: ${venvDir.absolutePath}" }
-        }
-
-        send(DownloadProgress(0.15f, "Upgrading pip..."))
-
-        // Upgrade pip first
-        val pipUpgradeResult = runCommand(listOf(venvPython, "-m", "pip", "install", "--upgrade", "pip"))
-        if (!pipUpgradeResult.success) {
-            logger.warn { "pip upgrade warning: ${pipUpgradeResult.error}" }
-        }
-
-        send(DownloadProgress(0.20f, "Installing LibreTranslate (this may take several minutes)..."))
-
-        // Install libretranslate and certifi (for SSL certificate verification)
-        val installResult = runCommand(
-            listOf(venvPip, "install", "libretranslate", "certifi"),
-            timeoutMinutes = 15  // Can take a while due to dependencies
-        )
-        if (!installResult.success) {
-            throw UpdateException("Failed to install LibreTranslate: ${installResult.error}")
-        }
-
-        // On Windows, force-reinstall PyTorch CPU-only version AFTER LibreTranslate to fix DLL dependency issues
-        // LibreTranslate installs PyTorch with CUDA support which requires MKL libraries that are often missing
-        // We need to force-reinstall to overwrite the CUDA version with the CPU-only version
-        // We also need to install intel-openmp which provides the OpenMP runtime (libomp) that c10.dll depends on
-        // And reinstall ctranslate2 and argostranslate after PyTorch CPU to ensure binary compatibility
-        if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) {
-            // First, ensure Visual C++ Redistributable is installed (required for PyTorch DLLs)
-            send(DownloadProgress(0.35f, "Checking Visual C++ Runtime..."))
-            ensureVcRedistInstalled { progress, message ->
-                send(DownloadProgress(0.35f + progress * 0.05f, message))
-            }
-
-            send(DownloadProgress(0.40f, "Installing PyTorch (CPU version)..."))
-
-            // Uninstall packages that have torch dependency issues on Windows
-            send(DownloadProgress(0.45f, "Removing problematic packages..."))
-            val uninstallResult = runCommand(
-                listOf(
-                    venvPip, "uninstall", "-y", "torch", "torchvision", "torchaudio",
-                    "ctranslate2", "argostranslate", "argostranslatefiles", "libretranslate"
-                ),
-                timeoutMinutes = 5
-            )
-            logger.info { "Uninstalled packages: ${uninstallResult.output}" }
-
-            // Install older versions of packages that work on Windows without torch
-            // Based on https://github.com/nuttolum/LibreOnWindows
-            send(DownloadProgress(0.50f, "Installing Windows-compatible packages..."))
-
-            // Install argostranslate 1.6.1 which doesn't require torch
-            val argosResult = runCommand(
-                listOf(venvPip, "install", "--no-cache-dir", "argostranslate==1.6.1"),
-                timeoutMinutes = 10
-            )
-            if (!argosResult.success) {
-                logger.warn { "argostranslate installation warning: ${argosResult.error}" }
-            } else {
-                logger.info { "Installed argostranslate 1.6.1" }
-            }
-
-            // Install compatible version of argos-translate-files
-            send(DownloadProgress(0.60f, "Installing translation file support..."))
-            val argosFilesResult = runCommand(
-                listOf(venvPip, "install", "--no-cache-dir", "argos-translate-files==1.0.5"),
-                timeoutMinutes = 5
-            )
-            if (!argosFilesResult.success) {
-                logger.warn { "argos-translate-files installation warning: ${argosFilesResult.error}" }
-            }
-
-            // Install LibreTranslate with compatible dependencies
-            send(DownloadProgress(0.70f, "Installing LibreTranslate..."))
-            val libreResult = runCommand(
-                listOf(venvPip, "install", "--no-cache-dir", "--no-deps", "libretranslate"),
-                timeoutMinutes = 5
-            )
-            if (!libreResult.success) {
-                logger.warn { "LibreTranslate installation warning: ${libreResult.error}" }
-            }
-
-            // Install remaining dependencies with specific versions known to work
-            send(DownloadProgress(0.80f, "Installing remaining dependencies..."))
-            val depsResult = runCommand(
-                listOf(
-                    venvPip, "install", "--no-cache-dir",
-                    "flask", "flask-swagger", "flask-swagger-ui", "flask-limiter",
-                    "flask-cors", "waitress", "expiringdict", "appdirs", "apscheduler",
-                    "translatehtml", "itsdangerous", "werkzeug", "jinja2"
-                ),
-                timeoutMinutes = 10
-            )
-            if (!depsResult.success) {
-                logger.warn { "Dependencies installation warning: ${depsResult.error}" }
-            } else {
-                logger.info { "Installed Windows-compatible LibreTranslate stack" }
-            }
-        }
-
-        send(DownloadProgress(0.85f, "Verifying installation..."))
-
-        // Verify installation and get version
-        val versionResult = runCommand(listOf(venvPip, "show", "libretranslate"))
-        val version = if (versionResult.success) {
-            val versionLine = versionResult.output.lines().find { it.startsWith("Version:") }
-            versionLine?.substringAfter("Version:")?.trim() ?: "unknown"
-        } else {
-            "unknown"
-        }
-
-        logger.info { "LibreTranslate $version installed successfully" }
-
-        // Save installed version
-        val versions = configManager.getInstalledVersions()
-        configManager.saveInstalledVersions(versions.copy(libreTranslate = version))
-
-        send(DownloadProgress(1f, "LibreTranslate $version installed"))
-    }.flowOn(Dispatchers.IO)
-
-    /**
-     * Checks if LibreTranslate is installed.
-     */
-    fun isLibreTranslateInstalled(): Boolean {
-        val venvDir = File(platformPaths.libreTranslateDir, "venv")
-        val venvPython = getVenvPythonPath(File(platformPaths.libreTranslateDir, "venv"))
-
-        if (!File(venvPython).exists()) {
-            return false
-        }
-
-        return try {
-            val result = runCommand(listOf(venvPython, "-c", "import libretranslate; print('ok')"))
-            result.success && result.output.contains("ok")
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Gets the installed LibreTranslate version.
-     */
-    fun getLibreTranslateVersion(): String? {
-        val venvPip = getVenvPipPath(File(platformPaths.libreTranslateDir, "venv"))
-
-        if (!File(venvPip).exists()) {
-            return null
-        }
-
-        return try {
-            val result = runCommand(listOf(venvPip, "show", "libretranslate"))
-            if (result.success) {
-                result.output.lines()
-                    .find { it.startsWith("Version:") }
-                    ?.substringAfter("Version:")
-                    ?.trim()
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-    }
 
     /**
      * Checks for LibreTranslate updates via pip.
@@ -2030,179 +1427,6 @@ class UpdateManager(
         }
     }
 
-    /**
-     * Finds Python 3.8+ installation.
-     */
-    private fun findPythonPath(): String? {
-        val pythonCommands = when (platformPaths.operatingSystem) {
-            OperatingSystem.WINDOWS -> listOf("python", "python3", "py")
-            else -> listOf("python3", "python")
-        }
-
-        for (cmd in pythonCommands) {
-            try {
-                val process = ProcessBuilder(cmd, "--version")
-                    .redirectErrorStream(true)
-                    .start()
-                val output = process.inputStream.bufferedReader().readText()
-                process.waitFor()
-
-                if (process.exitValue() == 0) {
-                    // Parse version (e.g., "Python 3.11.2")
-                    val versionRegex = Regex("Python (\\d+)\\.(\\d+)")
-                    val match = versionRegex.find(output)
-                    if (match != null) {
-                        val major = match.groupValues[1].toIntOrNull() ?: 0
-                        val minor = match.groupValues[2].toIntOrNull() ?: 0
-                        if (major >= 3 && minor >= 8) {
-                            // Get full path
-                            val whichProcess = ProcessBuilder(
-                                if (platformPaths.operatingSystem == OperatingSystem.WINDOWS) "where" else "which",
-                                cmd
-                            ).redirectErrorStream(true).start()
-                            val path = whichProcess.inputStream.bufferedReader().readLine()
-                            whichProcess.waitFor()
-                            if (path?.isNotBlank() == true) {
-                                return path.trim()
-                            }
-                            return cmd
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                continue
-            }
-        }
-        return null
-    }
-
-    /**
-     * Gets Python path within a virtual environment.
-     */
-    private fun getVenvPythonPath(venvDir: File): String {
-        return when (platformPaths.operatingSystem) {
-            OperatingSystem.WINDOWS -> "${venvDir.absolutePath}\\Scripts\\python.exe"
-            else -> "${venvDir.absolutePath}/bin/python"
-        }
-    }
-
-    /**
-     * Creates a mock torch module in the virtual environment's site-packages.
-     * This provides a minimal implementation that satisfies ctranslate2's import requirements
-     * without loading PyTorch's problematic DLLs on Windows.
-     *
-     * ctranslate2 imports torch in its specs module for model conversion, but the actual
-     * translation inference doesn't require torch. This mock allows imports to succeed.
-     */
-    private fun createMockTorchModule(venvDir: File) {
-        val sitePackages = File(venvDir, "Lib/site-packages")
-        val torchDir = File(sitePackages, "torch")
-
-        // Remove any existing torch directory
-        if (torchDir.exists()) {
-            torchDir.deleteRecursively()
-        }
-
-        // Create torch package directory
-        torchDir.mkdirs()
-
-        // Create __init__.py with minimal mock implementation
-        val initPy = File(torchDir, "__init__.py")
-        initPy.writeText(
-            """
-# Mock torch module for Windows compatibility
-# This provides minimal stubs to satisfy ctranslate2's import requirements
-# without loading PyTorch's DLLs which have compatibility issues on some Windows systems
-
-__version__ = "2.0.0+mock"
-
-class dtype:
-    pass
-
-float16 = dtype()
-float32 = dtype()
-float64 = dtype()
-int8 = dtype()
-int16 = dtype()
-int32 = dtype()
-int64 = dtype()
-bool = dtype()
-bfloat16 = dtype()
-
-class Tensor:
-    def __init__(self, *args, **kwargs):
-        pass
-    def numpy(self):
-        raise NotImplementedError("Mock torch does not support tensor operations")
-    def to(self, *args, **kwargs):
-        return self
-    def cpu(self):
-        return self
-    def cuda(self):
-        return self
-
-def tensor(*args, **kwargs):
-    return Tensor()
-
-def zeros(*args, **kwargs):
-    return Tensor()
-
-def ones(*args, **kwargs):
-    return Tensor()
-
-def empty(*args, **kwargs):
-    return Tensor()
-
-def from_numpy(arr):
-    return Tensor()
-
-def no_grad():
-    class NoGradContext:
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-    return NoGradContext()
-
-def load(*args, **kwargs):
-    raise NotImplementedError("Mock torch does not support model loading")
-
-def save(*args, **kwargs):
-    raise NotImplementedError("Mock torch does not support model saving")
-
-class device:
-    def __init__(self, name="cpu"):
-        self.type = name
-
-class nn:
-    class Module:
-        def __init__(self):
-            pass
-        def forward(self, *args, **kwargs):
-            raise NotImplementedError("Mock torch does not support nn operations")
-        def __call__(self, *args, **kwargs):
-            return self.forward(*args, **kwargs)
-        def to(self, *args, **kwargs):
-            return self
-        def eval(self):
-            return self
-        def train(self, mode=True):
-            return self
-
-class cuda:
-    @staticmethod
-    def is_available():
-        return False
-    @staticmethod
-    def device_count():
-        return 0
-
-print("[torch mock] Using mock torch module - PyTorch operations are not available")
-""".trimIndent()
-        )
-
-        logger.info { "Created mock torch module at: ${torchDir.absolutePath}" }
-    }
 
     /**
      * Gets pip path within a virtual environment.
@@ -2306,6 +1530,14 @@ print("[torch mock] Using mock torch module - PyTorch operations are not availab
     /**
      * Downloads a file with retry logic, resume support, and optional checksum verification.
      * Implements atomic file replacement (download to temp, verify, move).
+     *
+     * Caching behavior (for failed-install recovery):
+     * - If [targetFile] already exists and is valid (matching checksum, or matching size via
+     *   HEAD), the download is skipped entirely. This lets the setup wizard reuse files from
+     *   a previous run when installation failed after some components were already downloaded.
+     * - If all retries fail, [tempFile] is preserved so a future invocation can resume from
+     *   the partial bytes instead of restarting from scratch. Stale cache entries are purged
+     *   by [cleanupStaleCache] after [INSTALL_CACHE_MAX_AGE_DAYS] days.
      */
     private suspend fun downloadFileWithRetry(
         url: String,
@@ -2314,6 +1546,18 @@ print("[torch mock] Using mock torch module - PyTorch operations are not availab
         expectedChecksum: String?,
         onProgress: suspend (Float, String) -> Unit
     ) = withContext(Dispatchers.IO) {
+        // Cache hit: target file from a previous run is still valid — nothing to download
+        if (targetFile.exists() && targetFile.length() > 0 &&
+            isCachedFileValid(url, targetFile, expectedChecksum, onProgress)
+        ) {
+            logger.info { "Reusing cached download: ${targetFile.absolutePath} (${targetFile.length()} bytes)" }
+            onProgress(1f, "Using cached download")
+            return@withContext
+        } else if (targetFile.exists() && targetFile.length() > 0) {
+            logger.info { "Cached file invalid, discarding and re-downloading: ${targetFile.absolutePath}" }
+            targetFile.delete()
+        }
+
         var lastException: Exception? = null
         var attempt = 0
 
@@ -2322,8 +1566,11 @@ print("[torch mock] Using mock torch module - PyTorch operations are not availab
                 attempt++
                 logger.info { "Download attempt $attempt/$MAX_RETRIES: $url" }
 
-                // Check for existing partial download
+                // Check for existing partial download — may come from a previous session
                 val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
+                if (existingBytes > 0) {
+                    logger.info { "Resuming from cached partial download: $existingBytes bytes at ${tempFile.absolutePath}" }
+                }
 
                 downloadFileWithResume(url, tempFile, existingBytes) { progress ->
                     onProgress(progress, "Downloading... (${(progress * 100).toInt()}%)")
@@ -2368,9 +1615,87 @@ print("[torch mock] Using mock torch module - PyTorch operations are not availab
             }
         }
 
-        // Clean up temp file on final failure
-        tempFile.delete()
+        // Preserve tempFile on final failure so a future wizard attempt can resume from here
+        if (tempFile.exists() && tempFile.length() > 0) {
+            logger.info { "Preserving partial download (${tempFile.length()} bytes) at ${tempFile.absolutePath} for resume on next attempt" }
+        }
         throw UpdateException("Download failed after $MAX_RETRIES attempts", lastException)
+    }
+
+    /**
+     * Deletes entries in the install-wizard cache directory that have not been touched
+     * for longer than [maxAgeMs]. Default is [INSTALL_CACHE_MAX_AGE_MS] (one week).
+     *
+     * Cached archives and partial `.tmp` files survive app restarts so a failed
+     * installation can be retried without re-downloading; this method caps how long
+     * those files may linger on disk.
+     *
+     * Best-effort: IO errors on individual entries are logged and skipped so a failing
+     * cleanup cannot prevent the app from starting.
+     */
+    fun cleanupStaleCache(maxAgeMs: Long = INSTALL_CACHE_MAX_AGE_MS) {
+        val dir = File(platformPaths.cacheDir, "install")
+        if (!dir.exists()) return
+
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        val entries = dir.listFiles() ?: return
+
+        var removed = 0
+        var bytesFreed = 0L
+        for (entry in entries) {
+            try {
+                if (entry.lastModified() >= cutoff) continue
+                val size = if (entry.isFile) entry.length() else 0L
+                val deleted = if (entry.isDirectory) entry.deleteRecursively() else entry.delete()
+                if (deleted) {
+                    removed++
+                    bytesFreed += size
+                    logger.debug { "Purged stale install cache entry: ${entry.name}" }
+                } else {
+                    logger.warn { "Could not delete stale install cache entry: ${entry.absolutePath}" }
+                }
+            } catch (e: Exception) {
+                logger.warn { "Error cleaning install cache entry ${entry.name}: ${e.message}" }
+            }
+        }
+
+        if (removed > 0) {
+            logger.info {
+                "Purged $removed stale install-cache entries older than $INSTALL_CACHE_MAX_AGE_DAYS days " +
+                "(${bytesFreed / 1_000_000} MB) from ${dir.absolutePath}"
+            }
+        }
+    }
+
+    /**
+     * Checks whether a previously downloaded file on disk can be reused as-is.
+     * Prefers checksum verification when available; otherwise compares the file size
+     * against the server-reported Content-Length via HEAD.
+     */
+    private suspend fun isCachedFileValid(
+        url: String,
+        file: File,
+        expectedChecksum: String?,
+        onProgress: suspend (Float, String) -> Unit
+    ): Boolean {
+        if (expectedChecksum != null) {
+            onProgress(0f, "Verifying cached file...")
+            return try {
+                calculateSha256(file).equals(expectedChecksum, ignoreCase = true)
+            } catch (e: Exception) {
+                logger.warn { "Failed to verify cached file checksum: ${e.message}" }
+                false
+            }
+        }
+
+        return try {
+            val headResponse = httpClient.head(url)
+            val expectedSize = headResponse.contentLength()
+            expectedSize != null && expectedSize > 0 && expectedSize == file.length()
+        } catch (e: Exception) {
+            logger.debug { "Could not verify cached file size via HEAD ($url): ${e.message}" }
+            false
+        }
     }
 
     /**

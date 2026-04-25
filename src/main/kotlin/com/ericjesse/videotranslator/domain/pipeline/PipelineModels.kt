@@ -558,7 +558,7 @@ object ErrorMapper {
                     stage = stage,
                     message = "Whisper model not found",
                     technicalDetails = e.message,
-                    suggestion = "Download the model in Settings > Whisper Models",
+                    suggestion = "Download the model in Settings > Transcription",
                     recoverable = true,
                     retryable = false
                 )

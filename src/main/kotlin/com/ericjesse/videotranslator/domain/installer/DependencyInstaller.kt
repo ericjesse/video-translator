@@ -46,9 +46,17 @@ interface DependencyInstaller {
      * The installation can be cancelled via [cancel], which will trigger
      * automatic rollback of any components installed during this session.
      *
+     * @param whisperModelId The Whisper model variant to download. Accepts
+     *   `"tiny"`, `"base"`, `"small"`, `"medium"`, or `"large"`. Defaults to `"base"`.
+     * @param includeLibreTranslate When true, Python + LibreTranslate are installed
+     *   alongside the core components. Set to false when the user has selected an
+     *   external translation provider and does not need the local pip stack.
      * @return Flow of installation progress events.
      */
-    fun install(): Flow<InstallationProgress>
+    fun install(
+        whisperModelId: String = "base",
+        includeLibreTranslate: Boolean = true,
+    ): Flow<InstallationProgress>
 
     /**
      * Returns a summary of what was installed and where.
@@ -111,6 +119,28 @@ enum class ComponentId {
     LIBRE_TRANSLATE,
     VC_REDIST, // Windows-only: Visual C++ Redistributable
     PYTHON // Windows-only: Python runtime for LibreTranslate
+}
+
+/**
+ * Maps a Whisper model name (e.g. `"base"`, `"large"`) to its corresponding
+ * [ComponentId]. Unknown names (including `"tiny"`, which the strategy pipeline
+ * does not yet ship a dedicated ComponentId for) fall back to
+ * [ComponentId.WHISPER_MODEL_BASE].
+ */
+fun whisperModelComponentId(modelName: String): ComponentId = when (modelName.lowercase()) {
+    "small" -> ComponentId.WHISPER_MODEL_SMALL
+    "medium" -> ComponentId.WHISPER_MODEL_MEDIUM
+    "large" -> ComponentId.WHISPER_MODEL_LARGE
+    else -> ComponentId.WHISPER_MODEL_BASE
+}
+
+/** Inverse of [whisperModelComponentId] — returns the canonical name. */
+fun ComponentId.whisperModelName(): String? = when (this) {
+    ComponentId.WHISPER_MODEL_BASE -> "base"
+    ComponentId.WHISPER_MODEL_SMALL -> "small"
+    ComponentId.WHISPER_MODEL_MEDIUM -> "medium"
+    ComponentId.WHISPER_MODEL_LARGE -> "large"
+    else -> null
 }
 
 /**

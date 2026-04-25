@@ -188,6 +188,21 @@ class LibreTranslateService(
         withContext(Dispatchers.IO) {
             try {
                 serverProcess?.let { process ->
+                    // Snapshot descendants BEFORE destroying the root — once the parent
+                    // exits, its children become orphans and ProcessHandle.descendants()
+                    // can no longer reach them via the parent.
+                    //
+                    // This matters on Windows: Process.destroy() only terminates the
+                    // directly-launched process. Python workers / torch subprocesses
+                    // spawned by LibreTranslate remain alive, holding python.exe and
+                    // DLLs open — which then blocks factory reset's deleteRecursively().
+                    val descendants = try {
+                        process.toHandle().descendants().toList()
+                    } catch (e: Exception) {
+                        logger.debug(e) { "Could not enumerate LibreTranslate descendants" }
+                        emptyList()
+                    }
+
                     // Try graceful shutdown first
                     process.destroy()
 
@@ -202,6 +217,27 @@ class LibreTranslateService(
                     if (terminated != true) {
                         logger.warn { "Force killing LibreTranslate server" }
                         process.destroyForcibly()
+                    }
+
+                    // Now terminate any descendants that survived. destroy() is a no-op
+                    // if the handle is already dead, so it's safe to call unconditionally.
+                    descendants.forEach { handle ->
+                        if (handle.isAlive) {
+                            logger.info { "Terminating LibreTranslate child PID ${handle.pid()}" }
+                            handle.destroy()
+                        }
+                    }
+                    // Wait briefly for graceful exit, then force-kill survivors so we
+                    // don't leave python.exe / DLLs locked for subsequent operations
+                    // (factory reset, reinstall).
+                    withTimeoutOrNull(SHUTDOWN_TIMEOUT_MS) {
+                        while (descendants.any { it.isAlive }) {
+                            delay(100)
+                        }
+                    }
+                    descendants.filter { it.isAlive }.forEach { handle ->
+                        logger.warn { "Force killing LibreTranslate child PID ${handle.pid()}" }
+                        handle.destroyForcibly()
                     }
                 }
 

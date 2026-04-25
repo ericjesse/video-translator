@@ -19,6 +19,7 @@ import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -47,9 +48,17 @@ class WindowsDependencyInstaller(
         const val PYTHON_DOWNLOAD_URL =
             "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-amd64.exe"
 
-        // VC++ Runtime version for LibreTranslate compatibility
-        // Version 14.29.x is known to work; 14.30+ may cause DLL issues
-        const val VC_RUNTIME_PREFERRED_VERSION = "14.29"
+        // Version of VC++ Redistributable that ships bundled with the app.
+        // Only used when no 14.x (or newer) runtime is already present on the machine.
+        // Microsoft guarantees ABI compatibility within the 14.x family and any newer
+        // major family is a superset, so an already-installed 14.x+ runtime is accepted
+        // as-is — we never downgrade the user's system VC++.
+        const val VC_RUNTIME_BUNDLED_VERSION = "14.29"
+
+        // Minimum major version of the VC++ redistributable we require.
+        // Anything >= 14 satisfies the ABI our bundled components link against.
+        const val VC_RUNTIME_MIN_MAJOR = 14
+        const val VC_RUNTIME_MAX_MAJOR_PROBE = 20
 
         // LibreTranslate language models to install by default
         val DEFAULT_LANGUAGE_MODELS = listOf(
@@ -91,7 +100,7 @@ class WindowsDependencyInstaller(
             "translatehtml==1.5.2",
             "waitress==2.1.2",
             "expiringdict==1.2.2",
-            "numpy",
+            "numpy<2",
             "packaging==23.1"
         )
     }
@@ -102,7 +111,10 @@ class WindowsDependencyInstaller(
     /**
      * Override install to handle LibreTranslate specially since it uses pip instead of direct download.
      */
-    override fun install(): Flow<InstallationProgress> = flow {
+    override fun install(
+        whisperModelId: String,
+        includeLibreTranslate: Boolean,
+    ): Flow<InstallationProgress> = flow {
         if (_state == InstallerState.INSTALLING) {
             emit(
                 InstallationProgress.Failed(
@@ -120,7 +132,7 @@ class WindowsDependencyInstaller(
         warnings.clear()
 
         val startTime = System.currentTimeMillis()
-        val components = getComponentDescriptions().filter { !it.isOptional }
+        val components = resolveComponentsToInstall(whisperModelId, includeLibreTranslate)
 
         try {
             components.forEachIndexed { index, component ->
@@ -133,11 +145,22 @@ class WindowsDependencyInstaller(
                     ComponentId.LIBRE_TRANSLATE -> isLibreTranslateInstalled()
                     ComponentId.VC_REDIST -> isVCRedistCompatibleVersionInstalled()
                     ComponentId.PYTHON -> isPythonCompatibleVersionInstalled()
+                     ComponentId.WHISPER_CPP -> isValidWhisperBinary(getInstallPath(component.id))
                     else -> isComponentInstalled(component.id)
                 }
 
                 if (alreadyInstalled) {
                     logger.info { "Component ${component.name} already installed, skipping" }
+                    // Surface the skip to the UI so the row flips from PENDING -> COMPLETE
+                    // and the overall progress bar credits the weight of this component.
+                    emit(
+                        InstallationProgress.ComponentCompleted(
+                            componentId = component.id,
+                            componentName = component.name,
+                            installPath = getInstallPath(component.id),
+                            version = null,
+                        )
+                    )
                     return@forEachIndexed
                 }
 
@@ -218,8 +241,16 @@ class WindowsDependencyInstaller(
                         installPath = result
                     } else {
                         // Standard download and install flow
-                        val downloadedFile = downloadComponent(component) { progress ->
-                            // Download progress
+                        val downloadedFile = downloadComponent(component) { pct, dl, total ->
+                            emit(
+                                InstallationProgress.Downloading(
+                                    componentId = component.id,
+                                    componentName = component.name,
+                                    downloadedBytes = dl,
+                                    totalBytes = total,
+                                    percentage = pct,
+                                )
+                            )
                         }
 
                         if (cancelled) {
@@ -392,11 +423,11 @@ class WindowsDependencyInstaller(
         ComponentDescription(
             id = ComponentId.VC_REDIST,
             name = "Visual C++ Runtime",
-            description = "Microsoft Visual C++ Redistributable (v$VC_RUNTIME_PREFERRED_VERSION)",
+            description = "Microsoft Visual C++ Redistributable (14.x or newer)",
             estimatedSizeMb = 25,
             warnings = listOf(
                 "Required for whisper.cpp and other native components",
-                "Version $VC_RUNTIME_PREFERRED_VERSION will be installed if not present or outdated"
+                "A bundled v$VC_RUNTIME_BUNDLED_VERSION will be installed only if no 14.x+ runtime is already present"
             )
         ),
         ComponentDescription(
@@ -589,58 +620,191 @@ class WindowsDependencyInstaller(
         return results
     }
 
-    private fun moveFFmpegBinaries(installDir: String) {
-        val binDir = File(installDir)
+    private fun moveFFmpegBinaries(installPath: String) {
+        // `installPath` is the *target* path for the flagship binary (e.g.
+        // `bin\ffmpeg.exe`), not the extraction directory. Resolve its parent
+        // folder — that's where the archive was unpacked into.
+        val binDir = File(installPath).parentFile?.takeIf { it.isDirectory }
+            ?: run {
+                logger.warn { "moveFFmpegBinaries: cannot resolve parent directory for $installPath" }
+                return
+            }
 
-        // Find the ffmpeg folder (e.g., "ffmpeg-7.0-essentials_build")
+        // gyan.dev zip extracts to a folder like "ffmpeg-7.0-essentials_build/bin/*.exe".
         val ffmpegFolder = binDir.listFiles()?.find {
             it.isDirectory && it.name.startsWith("ffmpeg-")
         }
 
         if (ffmpegFolder != null) {
-            val ffmpegBinDir = File(ffmpegFolder, "bin")
-            if (ffmpegBinDir.exists()) {
-                // Move ffmpeg.exe, ffprobe.exe, ffplay.exe to bin directory
-                ffmpegBinDir.listFiles()?.filter { it.extension == "exe" }?.forEach { exe ->
-                    val target = File(binDir, exe.name)
-                    if (!target.exists()) {
-                        exe.copyTo(target)
-                        logger.debug { "Copied ${exe.name} to ${target.absolutePath}" }
-                    }
+            val ffmpegBinDir = File(ffmpegFolder, "bin").takeIf { it.isDirectory } ?: ffmpegFolder
+            // Move every .exe (ffmpeg.exe, ffprobe.exe, ffplay.exe) up into `bin/`.
+            ffmpegBinDir.listFiles()?.filter { it.extension.equals("exe", ignoreCase = true) }?.forEach { exe ->
+                val target = File(binDir, exe.name)
+                if (!target.exists()) {
+                    exe.copyTo(target)
+                    logger.info { "Moved ${exe.name} -> ${target.absolutePath}" }
                 }
             }
-            // Clean up the extracted folder
             ffmpegFolder.deleteRecursively()
             logger.debug { "Cleaned up extracted folder: ${ffmpegFolder.absolutePath}" }
+        } else {
+            // Flat layout: .exe files may already be directly in binDir. Nothing to move.
+            logger.debug { "No 'ffmpeg-*' subfolder found under ${binDir.absolutePath}; assuming flat extraction" }
+        }
+
+        // Sanity check — log if the expected target is still missing.
+        if (!File(installPath).exists()) {
+            logger.warn {
+                "moveFFmpegBinaries: expected binary at $installPath still missing after extraction. " +
+                    "bin/ contents: ${binDir.listFiles()?.joinToString { it.name }}"
+            }
         }
     }
 
-    private fun moveWhisperBinaries(installDir: String) {
-        val binDir = File(installDir)
+     /**
+     * Wipes an existing LibreTranslate venv directory so the installer can create a fresh one.
+     * If python.exe is locked by a running LibreTranslate service, `python -m venv` would fail
+     * with "Permission denied". We stop any python.exe running out of the venv, then delete.
+     */
+    private suspend fun prepareVenvDirectory(venvDir: File, onProgress: suspend (String) -> Unit) {
+        if (!venvDir.exists()) return
 
-        // whisper.cpp might extract to a subdirectory or directly
-        // Look for whisper.exe or main.exe in subdirectories
-        val whisperExe = binDir.walkTopDown()
-            .filter { it.isFile && (it.name == "main.exe" || it.name == "whisper.exe") }
-            .firstOrNull()
+        logger.info { "Existing venv found at ${venvDir.absolutePath}; wiping for fresh install" }
+        onProgress("Removing previous LibreTranslate environment...")
 
-        if (whisperExe != null && whisperExe.parentFile != binDir) {
-            val target = File(binDir, "whisper.exe")
-            if (!target.exists()) {
-                whisperExe.copyTo(target)
-                logger.debug { "Copied ${whisperExe.name} to ${target.absolutePath}" }
+        if (tryDeleteRecursively(venvDir)) return
+
+        logger.warn { "Initial venv delete failed; stopping locking python.exe processes" }
+        stopPythonProcessesInVenv(venvDir)
+        delay(500) // Give Windows a moment to release file handles
+
+        if (tryDeleteRecursively(venvDir)) return
+
+        logger.error {
+            "Unable to delete existing venv at ${venvDir.absolutePath}. A process is still " +
+                "holding files open. Please close the application and re-run setup."
+        }
+        throw RuntimeException(
+            "Cannot recreate LibreTranslate environment at ${venvDir.absolutePath}: " +
+                "directory is locked by another process. Please close the application and try again."
+        )
+    }
+
+    private fun tryDeleteRecursively(dir: File): Boolean = try {
+        dir.deleteRecursively() && !dir.exists()
+    } catch (e: Exception) {
+        logger.debug(e) { "deleteRecursively failed for ${dir.absolutePath}" }
+        false
+    }
+
+    /**
+     * Stops any python.exe processes whose ExecutablePath is under [venvDir].
+     * Uses PowerShell (always available on Windows 10+) to avoid killing unrelated python.exe
+     * processes elsewhere on the system.
+     */
+    private suspend fun stopPythonProcessesInVenv(venvDir: File) {
+        // PowerShell single-quoted strings take literal backslashes — no escaping needed.
+        // Escape any single-quotes in the path (very rare) to avoid breaking the literal.
+        val venvPathLiteral = venvDir.absolutePath.replace("'", "''")
+        // Kotlin ${'$'} emits a literal $ so PowerShell sees $_ (pipeline current object).
+        val d = "${'$'}"
+        // Avoid double-quotes in the script — Java's Windows ProcessBuilder silently drops
+        // them from CreateProcess command-lines, breaking Get-CimInstance's -Filter. Using
+        // Get-Process + Where-Object on .Path keeps the whole script single-quote-only.
+        val psScript =
+            "Get-Process -Name python -ErrorAction SilentlyContinue | " +
+                "Where-Object { ${d}_.Path -like '$venvPathLiteral\\*' } | " +
+                "ForEach-Object { " +
+                "Write-Output ('Stopping PID ' + ${d}_.Id); " +
+                "Stop-Process -Id ${d}_.Id -Force -ErrorAction SilentlyContinue " +
+                "}"
+        // Pass as -EncodedCommand (UTF-16LE base64) to eliminate any shell-quoting ambiguity.
+        val encoded = java.util.Base64.getEncoder()
+            .encodeToString(psScript.toByteArray(Charsets.UTF_16LE))
+        try {
+            val result = processExecutor.executeAndCapture(
+                listOf(
+                    "powershell", "-NoProfile", "-NonInteractive",
+                    "-EncodedCommand", encoded
+                ),
+                ProcessConfig(timeoutMinutes = 1)
+            )
+            logger.info {
+                "venv process cleanup: exit=${result.exitCode}, " +
+                    "out=${result.stdout.trim()}, err=${result.stderr.trim()}"
             }
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to stop python.exe processes in venv" }
+        }
+    }
 
-            // Also copy any DLLs that might be needed
-            whisperExe.parentFile.listFiles()?.filter { it.extension == "dll" }?.forEach { dll ->
+    /**
+     * Detects a valid whisper.cpp binary at the given path. Modern whisper.cpp releases ship
+     * `whisper.exe` as a deprecation stub (~100 KB) that prints a warning and exits 1.
+     * The real binary (whisper-cli.exe renamed to whisper.exe during install) is >10 MB.
+     * We use a size threshold to reject the stub and force a reinstall that picks whisper-cli.exe.
+     */
+    private fun isValidWhisperBinary(path: String): Boolean {
+        val f = File(path)
+        if (!f.exists()) return false
+        val size = f.length()
+        if (size < 1_000_000) {
+            logger.warn {
+                "whisper binary at $path is only $size bytes — likely a deprecation stub. Will reinstall."
+            }
+            return false
+        }
+        return true
+    }
+
+    private fun moveWhisperBinaries(installPath: String) {
+        val binDir = File(installPath).parentFile?.takeIf { it.isDirectory }
+            ?: run {
+                logger.warn { "moveWhisperBinaries: cannot resolve parent directory for $installPath" }
+                return
+            }
+        val target = File(installPath) // bin\whisper.exe
+
+        // Recognised whisper.cpp binary names, in priority order:
+        //  - whisper-cli.exe (v1.7+, current real binary)
+        //  - main.exe (classic)
+        //  - whisper.exe (older builds) — modern releases ship this as a deprecation stub
+        //    that prints a warning and exits 1, so it must be the LAST fallback.
+        val priorityOrder = listOf("whisper-cli.exe", "main.exe", "whisper.exe")
+
+        val foundByName = binDir.walkTopDown()
+            .filter { it.isFile && it.name.lowercase() in priorityOrder }
+            .groupBy { it.name.lowercase() }
+
+        val whisperExe = priorityOrder.firstNotNullOfOrNull { foundByName[it]?.firstOrNull() }
+
+        if (whisperExe == null) {
+            logger.warn {
+                "moveWhisperBinaries: no whisper binary found under ${binDir.absolutePath}. " +
+                    "bin/ contents: ${binDir.listFiles()?.joinToString { it.name }}"
+            }
+            return
+        }
+
+        // Copy the discovered binary to bin\whisper.exe (same-dir case → rename via copy).
+        if (!target.exists() || whisperExe.absolutePath != target.absolutePath) {
+            whisperExe.copyTo(target, overwrite = true)
+            logger.info { "Installed whisper binary: ${whisperExe.name} -> ${target.absolutePath}" }
+        }
+
+        // whisper.cpp needs ggml.dll, whisper.dll and friends in the same dir as the exe.
+        // Copy DLLs from the exe's directory (may equal binDir already for flat layouts).
+        whisperExe.parentFile?.listFiles()?.filter { it.extension.equals("dll", ignoreCase = true) }
+            ?.forEach { dll ->
                 val dllTarget = File(binDir, dll.name)
                 if (!dllTarget.exists()) {
                     dll.copyTo(dllTarget)
-                    logger.debug { "Copied ${dll.name} to ${dllTarget.absolutePath}" }
+                    logger.debug { "Copied DLL ${dll.name} -> ${dllTarget.absolutePath}" }
                 }
             }
 
-            // Clean up any extracted subdirectories
+        // Clean up any nested subdirectories left by the archive (keeps binDir tidy).
+        if (whisperExe.parentFile != binDir) {
             binDir.listFiles()?.filter { it.isDirectory }?.forEach { dir ->
                 dir.deleteRecursively()
                 logger.debug { "Cleaned up extracted folder: ${dir.absolutePath}" }
@@ -649,55 +813,33 @@ class WindowsDependencyInstaller(
     }
 
     private fun checkVCRedist(): PreInstallCheckResult {
-        logger.info { "Checking Visual C++ Runtime (preferred version: $VC_RUNTIME_PREFERRED_VERSION)..." }
+        logger.info { "Checking Visual C++ Runtime (minimum major: $VC_RUNTIME_MIN_MAJOR)..." }
         return try {
-            // Try to get the version from registry first
             val version = getVCRedistVersion()
             logger.info { "Registry check for VC++ Runtime: ${version ?: "not found"}" }
 
             if (version != null) {
-                val majorMinor = version.removePrefix("v").split(".").take(2).joinToString(".")
-                val versionNum = majorMinor.toDoubleOrNull() ?: 0.0
-                val requiredVersionNum = VC_RUNTIME_PREFERRED_VERSION.toDoubleOrNull() ?: 14.29
-                logger.info { "VC++ Runtime version number: $versionNum (required: $requiredVersionNum)" }
+                val major = version.removePrefix("v").substringBefore('.').toIntOrNull() ?: 0
+                logger.info { "VC++ Runtime major version detected: $major" }
 
-                when {
-                    // Version >= 14.30 is incompatible - FAIL installation
-                    versionNum >= 14.30 -> {
-                        logger.error { "VC++ Runtime version $version (>= 14.30) is incompatible with LibreTranslate" }
-                        PreInstallCheckResult.Failed(
-                            checkName = "Visual C++ Runtime",
-                            reason = "Visual C++ Runtime $version is installed, but version 14.30+ is incompatible with LibreTranslate due to DLL issues.",
-                            suggestion = "Please uninstall the current Visual C++ Redistributable (version $version) and restart the setup. Version $VC_RUNTIME_PREFERRED_VERSION will be installed automatically."
-                        )
-                    }
-                    // Version 14.29.x is compatible - PASS
-                    majorMinor.startsWith(VC_RUNTIME_PREFERRED_VERSION) -> {
-                        logger.info { "VC++ Runtime version $version is compatible" }
-                        PreInstallCheckResult.Passed(
-                            checkName = "Visual C++ Runtime",
-                            details = "Visual C++ Runtime $version (compatible)"
-                        )
-                    }
-                    // Version < 14.29 - will be upgraded during installation
-                    versionNum < requiredVersionNum -> {
-                        logger.info { "VC++ Runtime version $version will be upgraded to v$VC_RUNTIME_PREFERRED_VERSION" }
-                        PreInstallCheckResult.Passed(
-                            checkName = "Visual C++ Runtime",
-                            details = "Visual C++ Runtime $version found. Will be upgraded to v$VC_RUNTIME_PREFERRED_VERSION during installation."
-                        )
-                    }
-                    // Any other case (shouldn't happen) - PASS
-                    else -> {
-                        logger.info { "VC++ Runtime version $version is installed (unexpected version range)" }
-                        PreInstallCheckResult.Passed(
-                            checkName = "Visual C++ Runtime",
-                            details = "Visual C++ Runtime $version is installed"
-                        )
-                    }
+                if (major >= VC_RUNTIME_MIN_MAJOR) {
+                    // Any 14.x or newer major family is ABI-compatible with our bundled
+                    // components. Skip the install and keep the user's system runtime.
+                    logger.info { "VC++ Runtime $version satisfies minimum $VC_RUNTIME_MIN_MAJOR.x; skipping install" }
+                    PreInstallCheckResult.Passed(
+                        checkName = "Visual C++ Runtime",
+                        details = "Visual C++ Runtime $version detected (>= $VC_RUNTIME_MIN_MAJOR.x, compatible)"
+                    )
+                } else {
+                    // Older 13.x / earlier — bundled installer will bring us up to 14.x
+                    logger.info { "VC++ Runtime $version predates $VC_RUNTIME_MIN_MAJOR.x; will install bundled v$VC_RUNTIME_BUNDLED_VERSION" }
+                    PreInstallCheckResult.Passed(
+                        checkName = "Visual C++ Runtime",
+                        details = "Visual C++ Runtime $version found. Bundled v$VC_RUNTIME_BUNDLED_VERSION will be installed alongside it."
+                    )
                 }
             } else {
-                // No version found in registry - check if DLLs exist
+                // No version found in registry — check for universal CRT DLLs in System32
                 val system32 = System.getenv("SystemRoot")?.let { "$it\\System32" }
                     ?: "C:\\Windows\\System32"
                 logger.info { "Checking for VC++ DLLs in $system32" }
@@ -707,18 +849,17 @@ class WindowsDependencyInstaller(
                 logger.info { "VC++ DLLs present: $allPresent" }
 
                 if (allPresent) {
-                    // DLLs exist but version unknown - proceed with caution
-                    logger.info { "VC++ DLLs found but version unknown" }
+                    // DLLs present = 14.x runtime ships with the OS (Windows 10+/11) — skip install
+                    logger.info { "VC++ 14.x+ DLLs found in System32; skipping install" }
                     PreInstallCheckResult.Passed(
                         checkName = "Visual C++ Runtime",
-                        details = "Visual C++ Runtime detected. Version will be verified during installation."
+                        details = "Visual C++ 14.x runtime detected in System32 (compatible)"
                     )
                 } else {
-                    // No runtime found - will be installed
                     logger.info { "VC++ Runtime not found - will be installed during setup" }
                     PreInstallCheckResult.Passed(
                         checkName = "Visual C++ Runtime",
-                        details = "Visual C++ Runtime not found. Will be installed during setup."
+                        details = "Visual C++ Runtime not found. Bundled v$VC_RUNTIME_BUNDLED_VERSION will be installed during setup."
                     )
                 }
             }
@@ -733,37 +874,79 @@ class WindowsDependencyInstaller(
     }
 
     /**
-     * Gets the VC++ Redistributable version from the Windows registry.
+     * Gets the installed VC++ Redistributable version from the Windows registry.
+     *
+     * Probes every major family from [VC_RUNTIME_MIN_MAJOR] up to [VC_RUNTIME_MAX_MAJOR_PROBE]
+     * under both the native and WOW6432 registry views, so a future 15.x/16.x release or a
+     * Wow64-only install is still detected. Returns the highest version it finds, or null
+     * if no runtime is registered.
      */
     private fun getVCRedistVersion(): String? {
-        return try {
-            val process = ProcessBuilder(
-                "reg", "query",
-                "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64",
-                "/v", "Version"
-            ).redirectErrorStream(true).start()
+        val registryRoots = listOf(
+            "HKLM\\SOFTWARE\\Microsoft\\VisualStudio",
+            "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\VisualStudio"
+        )
 
+        var best: Pair<IntArray, String>? = null
+        for (major in VC_RUNTIME_MAX_MAJOR_PROBE downTo VC_RUNTIME_MIN_MAJOR) {
+            for (root in registryRoots) {
+                for (arch in listOf("x64", "X64")) {
+                    val regPath = "$root\\$major.0\\VC\\Runtimes\\$arch"
+                    val version = readVersionFromRegistry(regPath) ?: continue
+                    val parsed = version.removePrefix("v").split('.').mapNotNull { it.toIntOrNull() }.toIntArray()
+                    if (best == null || compareVersions(parsed, best.first) > 0) {
+                        best = parsed to version
+                    }
+                }
+            }
+        }
+        return best?.second
+    }
+
+    private fun readVersionFromRegistry(regPath: String): String? {
+        return try {
+            val process = ProcessBuilder("reg", "query", regPath, "/v", "Version")
+                .redirectErrorStream(true)
+                .start()
             val output = process.inputStream.bufferedReader().readText()
             process.waitFor()
-
-            // Parse output like "Version    REG_SZ    v14.29.30156.00"
-            val match = Regex("""Version\s+REG_SZ\s+(v[\d.]+)""").find(output)
-            match?.groupValues?.get(1)
+            // Parse output like "    Version    REG_SZ    v14.29.30156.00"
+            Regex("""Version\s+REG_SZ\s+(v?[\d.]+)""").find(output)?.groupValues?.get(1)
         } catch (e: Exception) {
-            logger.debug { "Could not query VC++ Runtime version from registry: ${e.message}" }
+            logger.debug { "Could not query VC++ version at $regPath: ${e.message}" }
             null
         }
     }
 
+    private fun compareVersions(a: IntArray, b: IntArray): Int {
+        for (i in 0 until maxOf(a.size, b.size)) {
+            val ai = a.getOrElse(i) { 0 }
+            val bi = b.getOrElse(i) { 0 }
+            if (ai != bi) return ai.compareTo(bi)
+        }
+        return 0
+    }
+
     /**
-     * Checks if a compatible version of VC++ Redistributable (14.29.x) is installed.
-     * Returns true only if version 14.29.x is installed.
-     * Returns false if no runtime, version < 14.29, or version >= 14.30.
+     * Returns true when a VC++ Redistributable satisfying our minimum ABI requirement
+     * (14.x or newer) is already on the system, in which case the installer loop skips
+     * running the bundled installer.
+     *
+     * Deliberately accepts versions newer than [VC_RUNTIME_BUNDLED_VERSION] — Windows 11
+     * ships a 14.x runtime by default, and Microsoft guarantees ABI compatibility within
+     * the 14.x family. Downgrading a system-wide component would be user-hostile.
      */
     private fun isVCRedistCompatibleVersionInstalled(): Boolean {
-        val version = getVCRedistVersion() ?: return false
-        val majorMinor = version.removePrefix("v").split(".").take(2).joinToString(".")
-        return majorMinor.startsWith(VC_RUNTIME_PREFERRED_VERSION)
+        val version = getVCRedistVersion()
+        if (version != null) {
+            val major = version.removePrefix("v").substringBefore('.').toIntOrNull() ?: 0
+            if (major >= VC_RUNTIME_MIN_MAJOR) return true
+        }
+
+        // Fallback: Windows 10/11 ships the 14.x universal CRT in System32 even before
+        // any redistributable has been registered — treat that as satisfying the requirement.
+        val system32 = System.getenv("SystemRoot")?.let { "$it\\System32" } ?: "C:\\Windows\\System32"
+        return listOf("vcruntime140.dll", "msvcp140.dll").all { File(system32, it).exists() }
     }
 
     /**
@@ -821,7 +1004,7 @@ class WindowsDependencyInstaller(
                         installedVersion
                     } else {
                         onProgress("Installation completed but version could not be verified")
-                        "v$VC_RUNTIME_PREFERRED_VERSION"
+                        "v$VC_RUNTIME_BUNDLED_VERSION"
                     }
                 }
 
@@ -1219,6 +1402,12 @@ class WindowsDependencyInstaller(
         val venvDir = File(libreTranslateDir, "venv")
 
         try {
+            // Step 0: If a venv already exists, wipe it. A previous run may have left
+            // python.exe locked by a running LibreTranslate service — `python -m venv`
+            // would fail with "Permission denied" trying to overwrite it. Stop any
+            // python.exe running out of the venv first, then delete the directory.
+            prepareVenvDirectory(venvDir) { onProgress(it) }
+
             // Step 1: Create virtual environment
             onProgress("Creating Python virtual environment...")
             logger.info { "Creating virtual environment at ${venvDir.absolutePath}" }
@@ -1316,32 +1505,54 @@ class WindowsDependencyInstaller(
                 return null
             }
 
-            // Step 7: Install language models via argospm
+            // Step 7: Install language models via argostranslate's Python API.
+            // We intentionally avoid relying on `argospm.exe`: some argostranslate
+            // releases (especially the 2.x line) no longer register that console
+            // script in a venv's Scripts/ folder, which previously left this wizard
+            // step with a FileNotFoundException. Calling the Python API through
+            // `python -c` works across versions.
             onProgress("Installing language models...")
-            logger.info { "Installing language models" }
+            logger.info { "Installing language models via argostranslate Python API" }
 
-            val argospmPath = "${venvDir.absolutePath}\\Scripts\\argospm.exe"
+            val modelArgs = DEFAULT_LANGUAGE_MODELS.map { it.removePrefix("translate-") }
+            val installModelsScript = """
+                import sys, argostranslate.package
+                pairs = [a.split('_', 1) for a in sys.argv[1:]]
+                argostranslate.package.update_package_index()
+                packages = argostranslate.package.get_available_packages()
+                installed, failed = 0, []
+                for frm, to in pairs:
+                    matches = [p for p in packages if p.from_code == frm and p.to_code == to]
+                    if not matches:
+                        failed.append(f'{frm}->{to}: no package available')
+                        continue
+                    try:
+                        argostranslate.package.install_from_path(str(matches[0].download()))
+                        installed += 1
+                        print(f'Installed {frm}->{to}')
+                    except Exception as e:
+                        failed.append(f'{frm}->{to}: {e}')
+                print(f'Summary: {installed} installed, {len(failed)} failed')
+                for f in failed:
+                    print('  - ' + f, file=sys.stderr)
+                sys.exit(0 if installed > 0 else 1)
+            """.trimIndent()
 
-            // Update argospm package index
-            processExecutor.executeAndCapture(
-                listOf(argospmPath, "update"),
-                ProcessConfig(timeoutMinutes = 5)
+            val modelResult = processExecutor.executeAndCapture(
+                listOf(venvPython, "-c", installModelsScript) + modelArgs,
+                ProcessConfig(timeoutMinutes = 30)
             )
 
-            // Install each language model
-            for (model in DEFAULT_LANGUAGE_MODELS) {
-                onProgress("Installing language model: $model...")
-                logger.info { "Installing language model: $model" }
-
-                val modelResult = processExecutor.executeAndCapture(
-                    listOf(argospmPath, "install", model),
-                    ProcessConfig(timeoutMinutes = 10)
-                )
-
-                if (modelResult.exitCode != 0) {
-                    logger.warn { "Failed to install model $model: ${modelResult.stderr}" }
-                    // Continue with other models
+            if (modelResult.exitCode != 0) {
+                // Fail-soft: LibreTranslate itself is already installed and will
+                // start; the user can install missing models from the UI later.
+                logger.warn {
+                    "Language model installation did not fully succeed. " +
+                        "stderr: ${modelResult.stderr.take(500)}. " +
+                        "LibreTranslate will still start; users can install missing models from the UI."
                 }
+            } else {
+                logger.info { "Language models installed:\n${modelResult.stdout}" }
             }
 
             // Step 8: Verify installation

@@ -85,7 +85,7 @@ class MacOSDependencyInstaller(
             "translatehtml==1.5.2",
             "waitress==2.1.2",
             "expiringdict==1.2.2",
-            "numpy",
+            "numpy<2",
             "packaging==23.1"
         )
     }
@@ -293,7 +293,10 @@ class MacOSDependencyInstaller(
     /**
      * Override install to handle LibreTranslate specially since it uses pip.
      */
-    override fun install(): Flow<InstallationProgress> = flow {
+    override fun install(
+        whisperModelId: String,
+        includeLibreTranslate: Boolean,
+    ): Flow<InstallationProgress> = flow {
         if (_state == InstallerState.INSTALLING) {
             emit(
                 InstallationProgress.Failed(
@@ -311,7 +314,7 @@ class MacOSDependencyInstaller(
         warnings.clear()
 
         val startTime = System.currentTimeMillis()
-        val components = getComponentDescriptions().filter { !it.isOptional }
+        val components = resolveComponentsToInstall(whisperModelId, includeLibreTranslate)
 
         try {
             components.forEachIndexed { index, component ->
@@ -328,6 +331,14 @@ class MacOSDependencyInstaller(
 
                 if (alreadyInstalled) {
                     logger.info { "Component ${component.name} already installed, skipping" }
+                    emit(
+                        InstallationProgress.ComponentCompleted(
+                            componentId = component.id,
+                            componentName = component.name,
+                            installPath = getInstallPath(component.id),
+                            version = null,
+                        )
+                    )
                     return@forEachIndexed
                 }
 
@@ -385,7 +396,17 @@ class MacOSDependencyInstaller(
                         installPath = result
                     } else {
                         // Standard download and install flow
-                        val downloadedFile = downloadComponent(component) { _ -> }
+                        val downloadedFile = downloadComponent(component) { pct, dl, total ->
+                            emit(
+                                InstallationProgress.Downloading(
+                                    componentId = component.id,
+                                    componentName = component.name,
+                                    downloadedBytes = dl,
+                                    totalBytes = total,
+                                    percentage = pct,
+                                )
+                            )
+                        }
 
                         if (cancelled) {
                             throw CancellationException("Installation cancelled by user")
@@ -759,7 +780,7 @@ class MacOSDependencyInstaller(
 
             // Download using HTTP client
             val component = getComponentDescriptions().find { it.id == ComponentId.PYTHON }!!
-            val downloadedFile = downloadComponent(component) { _ -> }
+            val downloadedFile = downloadComponent(component) { _, _, _ -> }
             downloadedFile.copyTo(installerFile, overwrite = true)
             downloadedFile.delete()
 
