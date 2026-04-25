@@ -26,7 +26,7 @@ fun main() = application {
             // Force JVM exit to ensure all background threads are terminated
             exitProcess(0)
         },
-        title = "Video Translator",
+        title = "Linguini",
         state = windowState,
         resizable = true
     ) {

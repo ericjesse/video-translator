@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Linguini app icon (vector source of truth).
+
+  Concept: three horizontal pasta strands stacked like subtitle lines —
+  "linguini = subtitles". Warm cream pasta on a deep navy plate, with a
+  steam wisp curling from the top to hint at hot food + a speech bubble.
+
+  Render to platform formats with the `generateIcons` Gradle task, which
+  uses ImageMagick to produce icon.png (1024..16), icon.ico, and icon.icns.
+  See build.gradle.kts task `generateIcons`.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Plate background gradient: deep navy with a touch of teal. -->
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f2c4d"/>
+      <stop offset="100%" stop-color="#0e1a35"/>
+    </linearGradient>
+
+    <!-- Pasta strand gradient: warm semolina cream. -->
+    <linearGradient id="pasta" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#fde6a4"/>
+      <stop offset="55%" stop-color="#f4cd6c"/>
+      <stop offset="100%" stop-color="#d9a23a"/>
+    </linearGradient>
+
+    <!-- Soft inner shadow on the plate (using an inset by stroking inside a clip). -->
+    <radialGradient id="vignette" cx="0.5" cy="0.5" r="0.8">
+      <stop offset="60%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0.35"/>
+    </radialGradient>
+
+    <!-- Drop shadow filter for the strands. -->
+    <filter id="strandShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+      <feOffset dx="0" dy="6" result="offsetblur"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.55"/>
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded-square plate. -->
+  <rect x="32" y="32" width="960" height="960" rx="180" ry="180" fill="url(#plate)"/>
+  <rect x="32" y="32" width="960" height="960" rx="180" ry="180" fill="url(#vignette)"/>
+
+  <!-- Three pasta strands, drawn as wavy horizontal subtitle-style lines.
+       Stroke widths and lengths roughly mimic CC subtitle rows: longest on top,
+       medium middle, shortest bottom (like a closed-caption block). -->
+  <g filter="url(#strandShadow)" stroke="url(#pasta)" stroke-linecap="round" fill="none">
+    <!-- Top strand: long, gentle wave. -->
+    <path d="M 200 380
+             C 320 320, 440 440, 560 380
+             S 800 320, 824 380"
+          stroke-width="62"/>
+
+    <!-- Middle strand: medium length, slightly tighter wave. -->
+    <path d="M 240 528
+             C 360 470, 460 590, 580 528
+             S 740 480, 784 528"
+          stroke-width="62"/>
+
+    <!-- Bottom strand: shortest. -->
+    <path d="M 280 676
+             C 380 620, 480 740, 580 676
+             S 700 640, 744 676"
+          stroke-width="62"/>
+  </g>
+
+  <!-- Steam wisp rising from the plate (also serves as a speech bubble nod). -->
+  <g fill="none" stroke="#e9efff" stroke-opacity="0.55" stroke-linecap="round" stroke-width="14">
+    <path d="M 460 250
+             C 440 200, 500 170, 480 120
+             S 540 70, 520 30"/>
+    <path d="M 560 270
+             C 540 220, 600 190, 580 140"/>
+  </g>
+</svg>

@@ -1,8 +1,8 @@
-# Video Translator
+# Linguini
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Translate YouTube videos into any language with automatic transcription and subtitle generation.
+Linguini is a desktop app that translates YouTube videos into any language with automatic transcription and subtitle generation. (Yes, it's pasta-themed. The subtitle stripes are noodles.)
 
 ## Features
 
@@ -23,9 +23,9 @@ Translate YouTube videos into any language with automatic transcription and subt
 
 Download the latest release for your platform from the [Releases](https://github.com/ericjesse/video-translator/releases) page:
 
-- **Windows**: `VideoTranslator-x.x.x.msi`
-- **macOS**: `VideoTranslator-x.x.x.dmg`
-- **Linux**: `VideoTranslator-x.x.x.AppImage`
+- **Windows**: `Linguini-x.x.x.msi`
+- **macOS**: `Linguini-x.x.x.dmg`
+- **Linux**: `linguini_x.x.x_amd64.deb`
 
 ### Unsigned Application Warning
 
@@ -38,11 +38,11 @@ This application is not code-signed. You may see security warnings on first laun
 **macOS (Gatekeeper):**
 1. Open System Settings → Privacy & Security
 2. Scroll to "Security" section  
-3. Click "Open Anyway" next to the Video Translator message
+3. Click "Open Anyway" next to the Linguini message
 
 Or via Terminal:
 ```bash
-xattr -d com.apple.quarantine /Applications/VideoTranslator.app
+xattr -d com.apple.quarantine /Applications/Linguini.app
 ```
 
 ### Building from Source
@@ -83,7 +83,7 @@ cd video-translator
 
 ## Configuration
 
-Settings are stored in platform-specific locations:
+Settings are stored in platform-specific locations. (The directory still uses the legacy `VideoTranslator` name; existing installs keep working without migration.)
 
 - **Windows**: `%APPDATA%\VideoTranslator\`
 - **macOS**: `~/Library/Application Support/VideoTranslator/`

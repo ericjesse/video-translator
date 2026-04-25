@@ -41,7 +41,7 @@ private const val APP_VERSION = "1.0.0"
  *
  * Displays:
  * - App icon (large, centered)
- * - App name "Video Translator"
+ * - App name "Linguini"
  * - Version number
  * - Tagline from i18n
  * - Language selector with native names

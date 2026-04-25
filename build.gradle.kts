@@ -2,6 +2,17 @@ import java.io.ByteArrayOutputStream
 import java.time.Instant
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
+// Batik is loaded into the buildscript classpath only — used by the
+// `generateIcons` task to rasterise icon.svg into PNG/ICO/ICNS without
+// requiring ImageMagick on the developer's machine.
+buildscript {
+    repositories { mavenCentral() }
+    dependencies {
+        classpath("org.apache.xmlgraphics:batik-transcoder:1.17")
+        classpath("org.apache.xmlgraphics:batik-codec:1.17")
+    }
+}
+
 plugins {
     kotlin("jvm") version "2.0.21"
     kotlin("plugin.serialization") version "2.0.21"
@@ -52,7 +63,7 @@ val appVersionCode = appVersion.split(".").take(3).mapIndexed { i, s ->
     (s.filter { it.isDigit() }.toIntOrNull() ?: 0) * when(i) { 0 -> 10000; 1 -> 100; else -> 1 }
 }.sum()
 
-println("Building Video Translator version: $appVersion (code: $appVersionCode)")
+println("Building Linguini version: $appVersion (code: $appVersionCode)")
 
 // =============================================================================
 // Build Info Generation
@@ -175,7 +186,7 @@ compose.desktop {
             )
 
             // Basic package information
-            packageName = "VideoTranslator"
+            packageName = "Linguini"
             packageVersion = appVersion.split("-").first().let {
                 // Ensure version is in X.Y.Z format for native packages
                 val parts = it.split(".")
@@ -185,7 +196,7 @@ compose.desktop {
                     else -> "${parts[0]}.0.0"
                 }
             }
-            description = "Translate YouTube videos into any language with AI-powered transcription and translation"
+            description = "Linguini — translate YouTube videos into any language with AI-powered transcription and translation"
             copyright = "© 2024 Eric Jesse. Apache License 2.0"
             vendor = "Eric Jesse"
             licenseFile.set(project.file("LICENSE"))
@@ -215,7 +226,7 @@ compose.desktop {
                 iconFile.set(project.file("src/main/resources/icons/icon.png"))
 
                 // Package metadata
-                packageName = "videotranslator"
+                packageName = "linguini"
                 debMaintainer = "eric@example.com"
                 menuGroup = "AudioVideo"
                 appCategory = "AudioVideo"
@@ -228,7 +239,7 @@ compose.desktop {
                 rpmLicenseType = "Apache-2.0"
 
                 // Installation directories
-                installationPath = "/opt/videotranslator"
+                installationPath = "/opt/linguini"
             }
 
             // =================================================================
@@ -238,9 +249,13 @@ compose.desktop {
                 iconFile.set(project.file("src/main/resources/icons/icon.ico"))
 
                 // Installer configuration
-                packageName = "VideoTranslator"
-                menuGroup = "Video Translator"
-                upgradeUuid = "8f7e6d5c-4b3a-2a1b-9c8d-7e6f5a4b3c2d"
+                packageName = "Linguini"
+                menuGroup = "Linguini"
+                // New upgradeUuid for the renamed product. Linguini is a fresh
+                // identity in the MSI registry — installing it does not "upgrade"
+                // an existing VideoTranslator install (the two can coexist until
+                // the user uninstalls the old product manually).
+                upgradeUuid = "5c1c4d11-7e0a-4f6b-9c5d-2a8b3e7f1d22"
 
                 // Installation options
                 dirChooser = true
@@ -276,7 +291,7 @@ compose.desktop {
                 // Bundle configuration
                 bundleID = "com.ericjesse.videotranslator"
                 appCategory = "public.app-category.video"
-                dockName = "Video Translator"
+                dockName = "Linguini"
 
                 // Code signing (use '-' for ad-hoc signing in development)
                 signing {
@@ -409,79 +424,125 @@ tasks.test {
     }
 }
 
-// Task to generate all icon sizes from a source image
+// Generates icon.png / icon.ico / icon.icns from icon.svg using Apache Batik
+// (loaded into the buildscript classpath above). This is pure-JVM — no
+// ImageMagick / iconutil / Inkscape required, so it runs identically on
+// Windows, macOS, Linux, and CI.
 tasks.register("generateIcons") {
     group = "build"
-    description = "Generate app icons at all required sizes (requires ImageMagick)"
+    description = "Render icon.png/ico/icns from icon.svg (pure JVM, uses Apache Batik)"
 
     doLast {
-        val sourceIcon = file("src/main/resources/icons/icon-source.png")
         val iconsDir = file("src/main/resources/icons")
+        val svg = file("$iconsDir/icon.svg")
+        if (!svg.exists()) {
+            throw GradleException("Source SVG not found at $svg. Create it first.")
+        }
+        println("Rendering from ${svg.absolutePath}")
 
-        if (!sourceIcon.exists()) {
-            println("Source icon not found at: $sourceIcon")
-            println("Please provide a high-resolution source icon (1024x1024 recommended)")
-            return@doLast
+        // Little-endian and big-endian byte writers used for the binary
+        // container formats (ICO is LE, ICNS is BE).
+        fun le16(v: Int) =
+            byteArrayOf((v and 0xFF).toByte(), ((v ushr 8) and 0xFF).toByte())
+        fun le32(v: Int) =
+            byteArrayOf(
+                (v and 0xFF).toByte(),
+                ((v ushr 8) and 0xFF).toByte(),
+                ((v ushr 16) and 0xFF).toByte(),
+                ((v ushr 24) and 0xFF).toByte()
+            )
+        fun be32(v: Int) =
+            byteArrayOf(
+                ((v ushr 24) and 0xFF).toByte(),
+                ((v ushr 16) and 0xFF).toByte(),
+                ((v ushr 8) and 0xFF).toByte(),
+                (v and 0xFF).toByte()
+            )
+
+        // Rasterise the SVG once per target size. Batik does the entire
+        // SVG → PNG pipeline in-memory; we keep each result as bytes so we
+        // can re-use them for the ICO/ICNS containers without reading from disk.
+        fun renderPng(size: Int): ByteArray {
+            val transcoder = org.apache.batik.transcoder.image.PNGTranscoder()
+            transcoder.addTranscodingHint(
+                org.apache.batik.transcoder.image.PNGTranscoder.KEY_WIDTH,
+                size.toFloat()
+            )
+            transcoder.addTranscodingHint(
+                org.apache.batik.transcoder.image.PNGTranscoder.KEY_HEIGHT,
+                size.toFloat()
+            )
+            val out = ByteArrayOutputStream()
+            transcoder.transcode(
+                org.apache.batik.transcoder.TranscoderInput(svg.toURI().toString()),
+                org.apache.batik.transcoder.TranscoderOutput(out)
+            )
+            return out.toByteArray()
         }
 
-        // Generate PNG icons for Linux at various sizes
-        listOf(16, 32, 48, 64, 128, 256, 512, 1024).forEach { size ->
-            exec {
-                commandLine("magick", sourceIcon.absolutePath,
-                    "-resize", "${size}x${size}",
-                    file("$iconsDir/icon-${size}.png").absolutePath)
-                isIgnoreExitValue = true
-            }
+        val sizes = listOf(16, 32, 48, 64, 128, 256, 512, 1024)
+        val pngs = sizes.associateWith { renderPng(it) }
+
+        // Per-size PNGs (kept for inspection / Linux desktop entries) plus the
+        // canonical icon.png used by the Linux native distribution.
+        sizes.forEach { size ->
+            file("$iconsDir/icon-$size.png").writeBytes(pngs[size]!!)
         }
+        file("$iconsDir/icon.png").writeBytes(pngs[256]!!)
+        println("  icon.png        ${pngs[256]!!.size} bytes (256×256)")
 
-        // Copy the 256px version as the main icon.png
-        exec {
-            commandLine("cp", file("$iconsDir/icon-256.png").absolutePath,
-                file("$iconsDir/icon.png").absolutePath)
-            isIgnoreExitValue = true
+        // -------- Windows ICO (PNG-embedded variant; supported on Vista+) --------
+        // Format: 6-byte ICONDIR header + 16-byte ICONDIRENTRY per image +
+        // PNG payloads concatenated. All multi-byte fields are little-endian.
+        val icoSizes = listOf(16, 32, 48, 64, 128, 256)
+        val ico = ByteArrayOutputStream()
+        ico.write(le16(0))                  // reserved
+        ico.write(le16(1))                  // type = icon
+        ico.write(le16(icoSizes.size))      // image count
+        var offset = 6 + 16 * icoSizes.size
+        icoSizes.forEach { size ->
+            val data = pngs[size]!!
+            // Width/height are 1 byte; the value 0 is interpreted as 256.
+            ico.write(if (size == 256) 0 else size)
+            ico.write(if (size == 256) 0 else size)
+            ico.write(0)                    // colorCount (0 = 32-bit)
+            ico.write(0)                    // reserved
+            ico.write(le16(1))              // planes
+            ico.write(le16(32))             // bitCount
+            ico.write(le32(data.size))      // bytes in resource
+            ico.write(le32(offset))         // offset to PNG data
+            offset += data.size
         }
+        icoSizes.forEach { size -> ico.write(pngs[size]!!) }
+        file("$iconsDir/icon.ico").writeBytes(ico.toByteArray())
+        println("  icon.ico        ${ico.size()} bytes (sizes ${icoSizes.joinToString()})")
 
-        // Generate Windows ICO (multi-resolution)
-        exec {
-            commandLine("magick", sourceIcon.absolutePath,
-                "-define", "icon:auto-resize=256,128,64,48,32,16",
-                file("$iconsDir/icon.ico").absolutePath)
-            isIgnoreExitValue = true
+        // -------- macOS ICNS (PNG-embedded variant; supported on 10.7+) --------
+        // Format: 8-byte "icns" + total-size header, followed by typed blocks.
+        // Each block is a 4-byte type code + 4-byte BE size (header + data) + data.
+        val icnsTypes = linkedMapOf(
+            "icp4" to 16,
+            "icp5" to 32,
+            "icp6" to 64,
+            "ic07" to 128,
+            "ic08" to 256,
+            "ic09" to 512,
+            "ic10" to 1024
+        )
+        val blocks = ByteArrayOutputStream()
+        icnsTypes.forEach { (type, size) ->
+            val data = pngs[size]!!
+            blocks.write(type.toByteArray(Charsets.US_ASCII))
+            blocks.write(be32(8 + data.size))
+            blocks.write(data)
         }
-
-        // Generate macOS ICNS
-        val iconsetDir = file("$iconsDir/icon.iconset")
-        iconsetDir.mkdirs()
-
-        mapOf(
-            "icon_16x16.png" to 16,
-            "icon_16x16@2x.png" to 32,
-            "icon_32x32.png" to 32,
-            "icon_32x32@2x.png" to 64,
-            "icon_128x128.png" to 128,
-            "icon_128x128@2x.png" to 256,
-            "icon_256x256.png" to 256,
-            "icon_256x256@2x.png" to 512,
-            "icon_512x512.png" to 512,
-            "icon_512x512@2x.png" to 1024
-        ).forEach { (name, size) ->
-            exec {
-                commandLine("magick", sourceIcon.absolutePath,
-                    "-resize", "${size}x${size}",
-                    file("$iconsetDir/$name").absolutePath)
-                isIgnoreExitValue = true
-            }
-        }
-
-        exec {
-            commandLine("iconutil", "-c", "icns", iconsetDir.absolutePath,
-                "-o", file("$iconsDir/icon.icns").absolutePath)
-            isIgnoreExitValue = true
-        }
-
-        iconsetDir.deleteRecursively()
-
-        println("Icons generated successfully!")
+        val blockBytes = blocks.toByteArray()
+        val icns = ByteArrayOutputStream()
+        icns.write("icns".toByteArray(Charsets.US_ASCII))
+        icns.write(be32(8 + blockBytes.size))
+        icns.write(blockBytes)
+        file("$iconsDir/icon.icns").writeBytes(icns.toByteArray())
+        println("  icon.icns       ${icns.size()} bytes (sizes ${icnsTypes.values.joinToString()})")
     }
 }
 

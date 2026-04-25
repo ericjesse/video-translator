@@ -1,6 +1,7 @@
-# Video Translator - Developer Documentation
+# Linguini - Developer Documentation
 
-> Comprehensive technical documentation for maintaining and extending the Video Translator application.
+> Comprehensive technical documentation for maintaining and extending the Linguini application.
+> (The codebase still uses the legacy `videotranslator` package path; only user-facing branding was renamed.)
 
 ---
 

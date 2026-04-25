@@ -1,6 +1,6 @@
-# Video Translator - User Guide
+# Linguini - User Guide
 
-Welcome to Video Translator! This application allows you to download videos from YouTube, transcribe their audio,
+Welcome to Linguini! This application allows you to download videos from YouTube, transcribe their audio,
 translate subtitles to your preferred language, and export the result with burned-in subtitles or as separate subtitle
 files.
 
@@ -44,12 +44,12 @@ files.
 
 1. Download the `.msi` installer from the releases page
 2. Double-click the installer and follow the on-screen instructions
-3. Launch Video Translator from the Start Menu
+3. Launch Linguini from the Start Menu
 
 ### macOS
 
 1. Download the `.dmg` file from the releases page
-2. Open the DMG and drag Video Translator to your Applications folder
+2. Open the DMG and drag Linguini to your Applications folder
 3. On first launch, right-click the app and select "Open" to bypass Gatekeeper
 
 ### Linux
@@ -69,11 +69,11 @@ files.
 
 ## First Launch - Setup Wizard
 
-When you first launch Video Translator, a setup wizard will guide you through the initial configuration.
+When you first launch Linguini, a setup wizard will guide you through the initial configuration.
 
 ### Step 1: Welcome Screen
 
-![Screenshot: Welcome screen showing the Video Translator logo, a brief description of the application, and a "Get Started" button at the bottom]
+![Screenshot: Welcome screen showing the Linguini logo, a brief description of the application, and a "Get Started" button at the bottom]
 
 Click **"Get Started"** to begin the setup process.
 
@@ -112,21 +112,28 @@ Select the Whisper model for audio transcription:
 
 ![Screenshot: Download progress screen showing a list of components being downloaded with checkmarks for completed items and a progress bar for the current download. Components listed: yt-dlp (checked), FFmpeg (checked), FFprobe (checked), Whisper (downloading, 45%), Python (pending), LibreTranslate (pending)]
 
-The application will download the required components:
+The application will download and install only the components that are actually missing. Each component shows a status of *Pending*, *Downloading*, *Installing*, or *Complete*:
 
 - **yt-dlp**: For downloading videos from YouTube
 - **FFmpeg & FFprobe**: For video/audio processing
 - **Whisper**: For audio transcription (speech-to-text)
-- **Python** (if needed): Required for LibreTranslate
-- **LibreTranslate** (if selected): Local translation service
+- **Whisper model** (the size you picked in Step 3): The neural network used to transcribe audio
+- **Visual C++ Runtime** (Windows only, if needed): The wizard detects the system's Visual C++ Runtime and skips installation when version 14.x or newer is already present. Only when nothing compatible is found does it install the bundled v14.29.
+- **Python** (only when LibreTranslate is selected): Required to run LibreTranslate. Skipped if a compatible Python is already on your machine.
+- **LibreTranslate** (if selected): Local translation service. Installed in its own isolated Python environment so it never conflicts with system packages.
+- **Language models** (if LibreTranslate was selected): Translation packages for the most common language pairs (English/French, English/German, English/Spanish).
+
+**Resumable downloads**: If the wizard fails mid-way (e.g., the network drops), the partially downloaded files are kept in a cache for one week. Click **Retry** and the wizard will pick up where it left off instead of re-downloading from scratch.
+
+**Already installed?** If you re-run the wizard after a previous install, components that are already present are detected automatically and marked *Complete* without being re-downloaded. To start completely from scratch, use *Factory Reset* (see [Settings → General](#general-tab)).
 
 This may take several minutes depending on your internet connection.
 
 ### Step 5: Setup Complete
 
-![Screenshot: Setup complete screen with a green checkmark icon, text saying "You're all set!", a summary of configured settings, and a "Start Using Video Translator" button]
+![Screenshot: Setup complete screen with a green checkmark icon, text saying "You're all set!", a summary of configured settings, and a "Start Using Linguini" button]
 
-Click **"Start Using Video Translator"** to begin!
+Click **"Start Using Linguini"** to begin!
 
 ---
 
@@ -261,6 +268,26 @@ Access settings by clicking the gear icon in the top-right corner.
 - **Check Now**: Manually check for updates
 - **Update Dependencies**: Download latest versions of yt-dlp, FFmpeg, etc.
 
+### General Tab
+
+![Screenshot: Settings window with "General" tab selected. Shows: 1) Application language selector, 2) Default output folder, 3) Default source/target language dropdowns, 4) A "Factory Reset" section at the bottom with a list of items to be deleted, the total reclaimable disk size, and a red "Factory Reset" button]
+
+- **Language**: Application interface language
+- **Default Output Location**: Where translated videos are saved by default
+- **Default Source / Target Language**: Pre-fill the language dropdowns on the main screen
+- **Factory Reset**: Reset the application to its initial state. The wizard will run again on the next launch. Use this when an installation has gotten into a bad state, when you want to free up disk space, or when you want to switch translation services cleanly.
+
+  Factory Reset will:
+    - Stop any running LibreTranslate server (including its Python worker subprocesses, so files can be deleted on Windows)
+    - Delete all settings and API keys
+    - Delete downloaded binaries (FFmpeg, yt-dlp, whisper)
+    - Delete Whisper models
+    - Delete the LibreTranslate environment and language packages
+    - Delete cached files
+    - Restart the application
+
+  The estimated total disk space that will be reclaimed is shown above the button. You will be asked to confirm before anything is deleted — the action **cannot** be undone.
+
 ---
 
 ## Troubleshooting
@@ -308,6 +335,7 @@ Access settings by clicking the gear icon in the top-right corner.
 2. Reinstall LibreTranslate from Settings → Updates → Update Dependencies
 3. Check if another application is using port 5000
 4. Try restarting the application
+5. If reinstalling fails with a "Permission denied" or "directory is locked" error on Windows, fully close the application and try again — the wizard will stop any leftover Python processes before recreating the LibreTranslate environment. As a last resort, run **Settings → General → Factory Reset** to wipe everything and re-run the wizard from scratch.
 
 ### Output Video Has No Audio
 
@@ -325,10 +353,10 @@ Access settings by clicking the gear icon in the top-right corner.
 
 **Solutions**:
 
-1. **Windows**: Install Visual C++ Redistributable 2015-2022
+1. **Windows**: The setup wizard normally installs the bundled Visual C++ Runtime automatically when no compatible version is detected. If launch still fails, install Visual C++ Redistributable 2015-2022 manually from Microsoft.
 2. **macOS**: Ensure you've allowed the app in Security & Privacy settings
 3. **Linux**: Check that all dependencies are installed
-4. Try deleting the configuration folder and restarting:
+4. From inside the app, use **Settings → General → Factory Reset** to wipe state and re-run the wizard. If the app won't open at all, manually delete the configuration folder and restart:
     - Windows: `%APPDATA%\VideoTranslator`
     - macOS: `~/Library/Application Support/VideoTranslator`
     - Linux: `~/.local/share/VideoTranslator`
@@ -337,14 +365,14 @@ Access settings by clicking the gear icon in the top-right corner.
 
 ## FAQ
 
-### Is Video Translator free?
+### Is Linguini free?
 
-Yes, Video Translator is free and open-source software. However, some translation services (DeepL, OpenAI, Google)
+Yes, Linguini is free and open-source software. However, some translation services (DeepL, OpenAI, Google)
 require paid API keys for high-volume usage.
 
 ### Can I translate videos from sources other than YouTube?
 
-Currently, Video Translator is optimized for YouTube videos. Support for other platforms may be added in future
+Currently, Linguini is optimized for YouTube videos. Support for other platforms may be added in future
 versions.
 
 ### How accurate is the transcription?

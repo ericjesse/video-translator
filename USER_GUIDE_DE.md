@@ -1,6 +1,6 @@
-# Video Translator - Benutzerhandbuch
+# Linguini - Benutzerhandbuch
 
-Willkommen bei Video Translator! Diese Anwendung ermöglicht es Ihnen, Videos von YouTube herunterzuladen, deren Audio zu
+Willkommen bei Linguini! Diese Anwendung ermöglicht es Ihnen, Videos von YouTube herunterzuladen, deren Audio zu
 transkribieren, Untertitel in Ihre bevorzugte Sprache zu übersetzen und das Ergebnis mit eingebrannten Untertiteln oder
 als separate Untertiteldateien zu exportieren.
 
@@ -44,12 +44,12 @@ als separate Untertiteldateien zu exportieren.
 
 1. Laden Sie das `.msi`-Installationsprogramm von der Release-Seite herunter
 2. Doppelklicken Sie auf das Installationsprogramm und folgen Sie den Anweisungen auf dem Bildschirm
-3. Starten Sie Video Translator über das Startmenü
+3. Starten Sie Linguini über das Startmenü
 
 ### macOS
 
 1. Laden Sie die `.dmg`-Datei von der Release-Seite herunter
-2. Öffnen Sie das DMG und ziehen Sie Video Translator in Ihren Programme-Ordner
+2. Öffnen Sie das DMG und ziehen Sie Linguini in Ihren Programme-Ordner
 3. Beim ersten Start klicken Sie mit der rechten Maustaste auf die App und wählen Sie "Öffnen", um Gatekeeper zu umgehen
 
 ### Linux
@@ -69,11 +69,11 @@ als separate Untertiteldateien zu exportieren.
 
 ## Erster Start - Einrichtungsassistent
 
-Beim ersten Start von Video Translator führt Sie ein Einrichtungsassistent durch die Erstkonfiguration.
+Beim ersten Start von Linguini führt Sie ein Einrichtungsassistent durch die Erstkonfiguration.
 
 ### Schritt 1: Willkommensbildschirm
 
-![Screenshot: Willkommensbildschirm mit dem Video Translator-Logo, einer kurzen Beschreibung der Anwendung und einer "Erste Schritte"-Schaltfläche am unteren Rand]
+![Screenshot: Willkommensbildschirm mit dem Linguini-Logo, einer kurzen Beschreibung der Anwendung und einer "Erste Schritte"-Schaltfläche am unteren Rand]
 
 Klicken Sie auf **"Erste Schritte"**, um den Einrichtungsprozess zu beginnen.
 
@@ -113,21 +113,28 @@ später in den Einstellungen ändern.
 
 ![Screenshot: Download-Fortschrittsbildschirm mit einer Liste der heruntergeladenen Komponenten mit Häkchen für abgeschlossene Elemente und einem Fortschrittsbalken für den aktuellen Download. Aufgelistete Komponenten: yt-dlp (abgehakt), FFmpeg (abgehakt), FFprobe (abgehakt), Whisper (wird heruntergeladen, 45%), Python (ausstehend), LibreTranslate (ausstehend)]
 
-Die Anwendung lädt die erforderlichen Komponenten herunter:
+Die Anwendung lädt nur die Komponenten herunter und installiert sie, die tatsächlich fehlen. Jede Komponente zeigt einen Status: *Ausstehend*, *Wird heruntergeladen*, *Wird installiert* oder *Abgeschlossen*:
 
 - **yt-dlp**: Zum Herunterladen von Videos von YouTube
 - **FFmpeg & FFprobe**: Für Video-/Audioverarbeitung
 - **Whisper**: Für Audio-Transkription (Sprache-zu-Text)
-- **Python** (falls erforderlich): Benötigt für LibreTranslate
-- **LibreTranslate** (falls ausgewählt): Lokaler Übersetzungsdienst
+- **Whisper-Modell** (die in Schritt 3 gewählte Größe): Das neuronale Netz, das das Audio transkribiert
+- **Visual C++ Runtime** (nur Windows, falls erforderlich): Der Assistent erkennt die im System vorhandene Visual C++ Runtime und überspringt die Installation, wenn bereits Version 14.x oder neuer installiert ist. Nur wenn keine kompatible Version gefunden wird, wird die mitgelieferte Version 14.29 installiert.
+- **Python** (nur wenn LibreTranslate ausgewählt wurde): Wird benötigt, um LibreTranslate auszuführen. Wird übersprungen, wenn bereits eine kompatible Python-Version auf Ihrem Computer vorhanden ist.
+- **LibreTranslate** (falls ausgewählt): Lokaler Übersetzungsdienst. Wird in einer eigenen, isolierten Python-Umgebung installiert, sodass es niemals mit System-Paketen in Konflikt steht.
+- **Sprachmodelle** (falls LibreTranslate ausgewählt wurde): Übersetzungspakete für die häufigsten Sprachpaare (Englisch/Französisch, Englisch/Deutsch, Englisch/Spanisch).
+
+**Wiederaufnehmbare Downloads**: Wenn der Assistent mittendrin fehlschlägt (z. B. weil das Netzwerk ausfällt), bleiben die teilweise heruntergeladenen Dateien eine Woche lang im Cache erhalten. Klicken Sie auf **Erneut versuchen**, und der Assistent setzt dort fort, wo er aufgehört hat, anstatt von vorne herunterzuladen.
+
+**Bereits installiert?** Wenn Sie den Assistenten nach einer früheren Installation erneut ausführen, werden bereits vorhandene Komponenten automatisch erkannt und als *Abgeschlossen* markiert, ohne erneut heruntergeladen zu werden. Um vollständig von vorne zu beginnen, verwenden Sie *Werkseinstellungen zurücksetzen* (siehe [Einstellungen → Allgemein](#allgemein-tab)).
 
 Dies kann je nach Internetverbindung mehrere Minuten dauern.
 
 ### Schritt 5: Einrichtung abgeschlossen
 
-![Screenshot: Bildschirm "Einrichtung abgeschlossen" mit einem grünen Häkchen, Text "Alles bereit!", einer Zusammenfassung der konfigurierten Einstellungen und einer Schaltfläche "Video Translator verwenden"]
+![Screenshot: Bildschirm "Einrichtung abgeschlossen" mit einem grünen Häkchen, Text "Alles bereit!", einer Zusammenfassung der konfigurierten Einstellungen und einer Schaltfläche "Linguini verwenden"]
 
-Klicken Sie auf **"Video Translator verwenden"**, um zu beginnen!
+Klicken Sie auf **"Linguini verwenden"**, um zu beginnen!
 
 ---
 
@@ -262,6 +269,26 @@ Greifen Sie auf die Einstellungen zu, indem Sie auf das Zahnrad-Symbol in der ob
 - **Jetzt prüfen**: Manuell nach Updates suchen
 - **Abhängigkeiten aktualisieren**: Neueste Versionen von yt-dlp, FFmpeg usw. herunterladen
 
+### Allgemein-Tab
+
+![Screenshot: Einstellungsfenster mit ausgewähltem "Allgemein"-Tab. Zeigt: 1) Sprachauswahl der Anwendung, 2) Standard-Ausgabeordner, 3) Standard-Quell-/Zielsprachen-Dropdowns, 4) Einen Bereich "Werkseinstellungen zurücksetzen" am unteren Rand mit einer Liste der zu löschenden Elemente, der Gesamtgröße des freigegebenen Speicherplatzes und einer roten "Werkseinstellungen zurücksetzen"-Schaltfläche]
+
+- **Sprache**: Sprache der Benutzeroberfläche
+- **Standard-Ausgabeort**: Wo übersetzte Videos standardmäßig gespeichert werden
+- **Standard-Quell-/Zielsprache**: Sprach-Dropdowns auf dem Hauptbildschirm vorbelegen
+- **Werkseinstellungen zurücksetzen**: Setzt die Anwendung auf den ursprünglichen Zustand zurück. Beim nächsten Start wird der Einrichtungsassistent erneut ausgeführt. Verwenden Sie diese Funktion, wenn eine Installation in einen fehlerhaften Zustand geraten ist, wenn Sie Speicherplatz freigeben möchten oder wenn Sie den Übersetzungsdienst sauber wechseln möchten.
+
+  Das Zurücksetzen auf Werkseinstellungen wird:
+    - Einen laufenden LibreTranslate-Server stoppen (einschließlich seiner Python-Worker-Subprozesse, damit Dateien unter Windows gelöscht werden können)
+    - Alle Einstellungen und API-Schlüssel löschen
+    - Heruntergeladene Binärdateien löschen (FFmpeg, yt-dlp, whisper)
+    - Whisper-Modelle löschen
+    - Die LibreTranslate-Umgebung und Sprachpakete löschen
+    - Cache-Dateien löschen
+    - Die Anwendung neu starten
+
+  Der geschätzte freizugebende Speicherplatz wird oberhalb der Schaltfläche angezeigt. Sie werden vor dem Löschen zur Bestätigung aufgefordert — die Aktion **kann nicht** rückgängig gemacht werden.
+
 ---
 
 ## Fehlerbehebung
@@ -309,6 +336,7 @@ Greifen Sie auf die Einstellungen zu, indem Sie auf das Zahnrad-Symbol in der ob
 2. Installieren Sie LibreTranslate neu unter Einstellungen → Aktualisierungen → Abhängigkeiten aktualisieren
 3. Prüfen Sie, ob eine andere Anwendung Port 5000 verwendet
 4. Versuchen Sie, die Anwendung neu zu starten
+5. Falls die Neuinstallation unter Windows mit einem Fehler "Zugriff verweigert" oder "Verzeichnis ist gesperrt" fehlschlägt, schließen Sie die Anwendung vollständig und versuchen Sie es erneut — der Assistent stoppt verbleibende Python-Prozesse, bevor er die LibreTranslate-Umgebung neu erstellt. Als letzte Möglichkeit verwenden Sie **Einstellungen → Allgemein → Werkseinstellungen zurücksetzen**, um alles zu löschen und den Assistenten von vorne zu starten.
 
 ### Ausgabevideo hat keinen Ton
 
@@ -326,10 +354,10 @@ Greifen Sie auf die Einstellungen zu, indem Sie auf das Zahnrad-Symbol in der ob
 
 **Lösungen**:
 
-1. **Windows**: Installieren Sie Visual C++ Redistributable 2015-2022
+1. **Windows**: Der Einrichtungsassistent installiert die mitgelieferte Visual C++ Runtime normalerweise automatisch, wenn keine kompatible Version erkannt wird. Falls der Start trotzdem fehlschlägt, installieren Sie Visual C++ Redistributable 2015-2022 manuell von Microsoft.
 2. **macOS**: Stellen Sie sicher, dass Sie die App in den Sicherheits- und Datenschutzeinstellungen erlaubt haben
 3. **Linux**: Überprüfen Sie, ob alle Abhängigkeiten installiert sind
-4. Versuchen Sie, den Konfigurationsordner zu löschen und neu zu starten:
+4. Verwenden Sie innerhalb der App **Einstellungen → Allgemein → Werkseinstellungen zurücksetzen**, um den Zustand zu löschen und den Assistenten erneut auszuführen. Falls die App überhaupt nicht startet, löschen Sie den Konfigurationsordner manuell und starten Sie neu:
     - Windows: `%APPDATA%\VideoTranslator`
     - macOS: `~/Library/Application Support/VideoTranslator`
     - Linux: `~/.local/share/VideoTranslator`
@@ -338,14 +366,14 @@ Greifen Sie auf die Einstellungen zu, indem Sie auf das Zahnrad-Symbol in der ob
 
 ## Häufige Fragen (FAQ)
 
-### Ist Video Translator kostenlos?
+### Ist Linguini kostenlos?
 
-Ja, Video Translator ist kostenlose Open-Source-Software. Einige Übersetzungsdienste (DeepL, OpenAI, Google) erfordern
+Ja, Linguini ist kostenlose Open-Source-Software. Einige Übersetzungsdienste (DeepL, OpenAI, Google) erfordern
 jedoch kostenpflichtige API-Schlüssel für hohe Nutzungsvolumen.
 
 ### Kann ich Videos von anderen Quellen als YouTube übersetzen?
 
-Derzeit ist Video Translator für YouTube-Videos optimiert. Unterstützung für andere Plattformen könnte in zukünftigen
+Derzeit ist Linguini für YouTube-Videos optimiert. Unterstützung für andere Plattformen könnte in zukünftigen
 Versionen hinzugefügt werden.
 
 ### Wie genau ist die Transkription?
